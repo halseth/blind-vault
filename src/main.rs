@@ -1,25 +1,28 @@
-use musig2::{tagged_hashes, KeyAggContext};
+use musig2::secp::Point;
+use musig2::secp::{G, MaybePoint, MaybeScalar};
 use musig2::{AggNonce, SecNonce};
 use musig2::{
     CompactSignature, FirstRound, PartialSignature, PubNonce, SecNonceSpices, SecondRound,
+    secp::Scalar,
 };
+use musig2::{KeyAggContext, tagged_hashes};
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use sha2::{Digest,Sha256};
+use sha2::{Digest, Sha256};
 
 fn main() {
     println!("Hello, world!");
 
- //   let pubkeys = [
- //       "026e14224899cf9c780fef5dd200f92a28cc67f71c0af6fe30b5657ffc943f08f4"
- //           .parse::<PublicKey>()
- //           .unwrap(),
- //       "02f3b071c064f115ca762ed88c3efd1927ea657c7949698b77255ea25751331f0b"
- //           .parse::<PublicKey>()
- //           .unwrap(),
- //       "03204ea8bc3425b2cbc9cb20617f67dc6b202467591d0b26d059e370b71ee392eb"
- //           .parse::<PublicKey>()
- //           .unwrap(),
- //   ];
+    //   let pubkeys = [
+    //       "026e14224899cf9c780fef5dd200f92a28cc67f71c0af6fe30b5657ffc943f08f4"
+    //           .parse::<PublicKey>()
+    //           .unwrap(),
+    //       "02f3b071c064f115ca762ed88c3efd1927ea657c7949698b77255ea25751331f0b"
+    //           .parse::<PublicKey>()
+    //           .unwrap(),
+    //       "03204ea8bc3425b2cbc9cb20617f67dc6b202467591d0b26d059e370b71ee392eb"
+    //           .parse::<PublicKey>()
+    //           .unwrap(),
+    //   ];
 
     let num_signers = 3;
     let seckey_seed = [0xABu8; 32];
@@ -27,9 +30,9 @@ fn main() {
     let secp = Secp256k1::new();
 
     let signer_index = 2;
- //   let seckey: SecretKey = "10e7721a3aa6de7a98cecdbd7c706c836a907ca46a43235a7b498b12498f98f0"
- //       .parse()
- //       .unwrap();
+    //   let seckey: SecretKey = "10e7721a3aa6de7a98cecdbd7c706c836a907ca46a43235a7b498b12498f98f0"
+    //       .parse()
+    //       .unwrap();
 
     let mut seckeys = vec![];
     for i in 0..num_signers {
@@ -44,16 +47,16 @@ fn main() {
 
     let pubkeys: Vec<PublicKey> = seckeys.iter().map(|s| s.public_key(&secp)).collect();
 
-    let key_agg_ctx = KeyAggContext::new(pubkeys).unwrap();
+    let key_agg_ctx = KeyAggContext::new(pubkeys.clone()).unwrap();
 
     // This is the key which the group has control over.
     let aggregated_pubkey: PublicKey = key_agg_ctx.aggregated_pubkey();
- //   assert_eq!(
- //       aggregated_pubkey,
- //       "02e272de44ea720667aba55341a1a761c0fc8fbe294aa31dbaf1cff80f1c2fd940"
- //           .parse()
- //           .unwrap()
- //   );
+    //   assert_eq!(
+    //       aggregated_pubkey,
+    //       "02e272de44ea720667aba55341a1a761c0fc8fbe294aa31dbaf1cff80f1c2fd940"
+    //           .parse()
+    //           .unwrap()
+    //   );
 
     // The group wants to sign something!
     let message = "hello interwebz!";
@@ -63,15 +66,14 @@ fn main() {
     // rand::rngs::OsRng.fill_bytes(&mut nonce_seed);
     let nonce_seed = [0xACu8; 32];
 
-
     // This is how `FirstRound` derives the nonce internally.
     let mut secnonces = vec![];
 
     for i in 0..num_signers {
         let s = SecNonce::build(nonce_seed)
-            .with_seckey(seckeys[i])
-            .with_message(&message)
-            .with_aggregated_pubkey(aggregated_pubkey)
+            //.with_seckey(seckeys[i])
+            //.with_message(&message)
+            //.with_aggregated_pubkey(aggregated_pubkey)
             .with_extra_input(&(i as u32).to_be_bytes())
             .build();
         secnonces.push(s);
@@ -102,14 +104,65 @@ fn main() {
     //    our_public_nonce,
     //];
 
+    let blinding_seed = [0xAAu8; 32];
+    let mut blinding_factors = vec![];
+    for i in 0..num_signers {
+        let blind_hash0: [u8; 32] = Sha256::new()
+            .chain_update(blinding_seed)
+            .chain_update(&(i as u32).to_be_bytes())
+            .chain_update(&(0 as u32).to_be_bytes())
+            .finalize()
+            .into();
+
+        //let k0 = SecretKey::from_byte_array(&blind_hash0).unwrap();
+        //let k0 = Scalar::from_be_bytes(blind_hash0).unwrap();
+        let k0 = Scalar::from_slice(&blind_hash0).unwrap();
+
+        let blind_hash1: [u8; 32] = Sha256::new()
+            .chain_update(blinding_seed)
+            .chain_update(&(i as u32).to_be_bytes())
+            .chain_update(&(1 as u32).to_be_bytes())
+            .finalize()
+            .into();
+
+        //let k1 = SecretKey::from_byte_array(&blind_hash1).unwrap();
+        let k1 = Scalar::from_slice(&blind_hash1).unwrap();
+        blinding_factors.push((k0, k1));
+    }
+
     // We manually aggregate the nonces together and then construct our partial signature.
     let aggregated_nonce: AggNonce = public_nonces.iter().sum();
+
+    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b)| *a).sum();
+    let bbs: MaybePoint = blinding_factors
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b))| {
+            //b *
+            let pubkey: Point = pubkeys[i].into();
+            let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
+            let bc = *b * c; //* pubkey
+            bc * pubkey
+        })
+        .sum();
+
+    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
+    let sign_nonce = agg_nonce + aas * G + bbs;
+;
     let partial_signatures: Vec<PartialSignature> = secnonces
-        .iter().enumerate()
+        .iter()
+        .enumerate()
         .map(|(i, s)| {
-            musig2::sign_partial(&key_agg_ctx, seckeys[i], s.clone(), &aggregated_nonce, message)
-                .expect("error creating partial signature")
-        }).collect();
+            musig2::sign_partial(
+                &key_agg_ctx,
+                seckeys[i],
+                s.clone(),
+                &aggregated_nonce,
+                message,
+            )
+            .expect("error creating partial signature")
+        })
+        .collect();
     //    let our_partial_signature: PartialSignature =
     //        musig2::sign_partial(&key_agg_ctx, seckey, secnonce, &aggregated_nonce, message)
     //            .expect("error creating partial signature");
@@ -127,10 +180,10 @@ fn main() {
     /// Signatures should be verified upon receipt and invalid signatures
     /// should be blamed on the signer who sent them.
     for (i, partial_signature) in partial_signatures.clone().into_iter().enumerate() {
-   //     if i == signer_index {
-   //         // Don't bother verifying our own signature
-   //         continue;
-   //     }
+        //     if i == signer_index {
+        //         // Don't bother verifying our own signature
+        //         continue;
+        //     }
 
         let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
         let their_pubnonce = &public_nonces[i];
