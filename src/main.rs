@@ -1,6 +1,6 @@
 use musig2::secp::Point;
 use musig2::secp::{G, MaybePoint, MaybeScalar};
-use musig2::{AggNonce, SecNonce};
+use musig2::{compute_challenge_hash_tweak, AggNonce, SecNonce};
 use musig2::{
     CompactSignature, FirstRound, PartialSignature, PubNonce, SecNonceSpices, SecondRound,
     secp::Scalar,
@@ -148,21 +148,42 @@ fn main() {
 
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
     let sign_nonce = agg_nonce + aas * G + bbs;
-;
+
+    let adaptor_point = MaybePoint::Infinity;
+    let adapted_nonce = agg_nonce + adaptor_point;
+
+    let nonce_x_bytes = adapted_nonce.serialize_xonly();
+    let e: MaybeScalar = compute_challenge_hash_tweak(&nonce_x_bytes, &aggregated_pubkey.into(), &message);
+
     let partial_signatures: Vec<PartialSignature> = secnonces
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            musig2::sign_partial(
+            musig2::sign_partial_challenge(
                 &key_agg_ctx,
                 seckeys[i],
                 s.clone(),
                 &aggregated_nonce,
-                message,
+                e,
             )
-            .expect("error creating partial signature")
+                .expect("error creating partial signature")
         })
         .collect();
+
+    //let partial_signatures: Vec<PartialSignature> = secnonces
+    //    .iter()
+    //    .enumerate()
+    //    .map(|(i, s)| {
+    //        musig2::sign_partial(
+    //            &key_agg_ctx,
+    //            seckeys[i],
+    //            s.clone(),
+    //            &aggregated_nonce,
+    //            message,
+    //        )
+    //        .expect("error creating partial signature")
+    //    })
+    //    .collect();
     //    let our_partial_signature: PartialSignature =
     //        musig2::sign_partial(&key_agg_ctx, seckey, secnonce, &aggregated_nonce, message)
     //            .expect("error creating partial signature");
