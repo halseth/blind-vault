@@ -163,7 +163,7 @@ fn main() {
                 &key_agg_ctx,
                 seckeys[i],
                 s.clone(),
-                &aggregated_nonce,
+                agg_nonce,
                 e,
             )
                 .expect("error creating partial signature")
