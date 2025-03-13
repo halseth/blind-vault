@@ -1,6 +1,6 @@
 use musig2::secp::Point;
 use musig2::secp::{G, MaybePoint, MaybeScalar};
-use musig2::{compute_challenge_hash_tweak, AggNonce, SecNonce};
+use musig2::{compute_challenge_hash_tweak, verify_partial_challenge, AggNonce, SecNonce};
 use musig2::{
     CompactSignature, FirstRound, PartialSignature, PubNonce, SecNonceSpices, SecondRound,
     secp::Scalar,
@@ -159,14 +159,15 @@ fn main() {
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            musig2::sign_partial_challenge(
+            let s: MaybeScalar= musig2::sign_partial_challenge(
                 &key_agg_ctx,
                 seckeys[i],
                 s.clone(),
                 agg_nonce,
                 e,
-            )
-                .expect("error creating partial signature")
+            ).expect("error creating partial signature");
+
+            s
         })
         .collect();
 
@@ -209,13 +210,14 @@ fn main() {
         let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
         let their_pubnonce = &public_nonces[i];
 
-        musig2::verify_partial(
+        verify_partial_challenge(
             &key_agg_ctx,
             partial_signature,
-            &aggregated_nonce,
+            agg_nonce,
+            adaptor_point,
             their_pubkey,
-            their_pubnonce,
-            message,
+            &their_pubnonce,
+            e,
         )
         .expect("received invalid signature from a peer");
     }
