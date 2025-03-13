@@ -24,7 +24,7 @@ fn main() {
     //           .unwrap(),
     //   ];
 
-    let num_signers = 3;
+    let num_signers = 1;
     let seckey_seed = [0xABu8; 32];
 
     let secp = Secp256k1::new();
