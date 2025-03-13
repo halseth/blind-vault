@@ -159,7 +159,7 @@ fn main() {
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let s: MaybeScalar= musig2::sign_partial_challenge(
+            let sign: MaybeScalar= musig2::sign_partial_challenge(
                 &key_agg_ctx,
                 seckeys[i],
                 s.clone(),
@@ -167,7 +167,7 @@ fn main() {
                 e,
             ).expect("error creating partial signature");
 
-            s
+            sign
         })
         .collect();
 
@@ -224,7 +224,7 @@ fn main() {
 
     let final_signature: [u8; 64] = musig2::aggregate_partial_signatures(
         &key_agg_ctx,
-        &aggregated_nonce,
+        agg_nonce.try_into().unwrap(),
         partial_signatures,
         message,
     )
