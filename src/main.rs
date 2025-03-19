@@ -1,6 +1,7 @@
 use musig2::secp::Point;
+use std::ops::Neg;
 use musig2::secp::{G, MaybePoint, MaybeScalar};
-use musig2::{compute_challenge_hash_tweak, verify_partial_challenge, AggNonce, SecNonce};
+use musig2::{AggNonce, SecNonce, compute_challenge_hash_tweak, verify_partial_challenge};
 use musig2::{
     CompactSignature, FirstRound, PartialSignature, PubNonce, SecNonceSpices, SecondRound,
     secp::Scalar,
@@ -24,7 +25,7 @@ fn main() {
     //           .unwrap(),
     //   ];
 
-    let num_signers = 1;
+    let num_signers = 6;
     let seckey_seed = [0xABu8; 32];
 
     let secp = Secp256k1::new();
@@ -46,11 +47,13 @@ fn main() {
     }
 
     let pubkeys: Vec<PublicKey> = seckeys.iter().map(|s| s.public_key(&secp)).collect();
+    println!("pubkey X_1: {}", pubkeys[0]);
 
     let key_agg_ctx = KeyAggContext::new(pubkeys.clone()).unwrap();
 
     // This is the key which the group has control over.
-    let aggregated_pubkey: PublicKey = key_agg_ctx.aggregated_pubkey();
+    let aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+    println!("agg pubkey X: {}", aggregated_pubkey);
     //   assert_eq!(
     //       aggregated_pubkey,
     //       "02e272de44ea720667aba55341a1a761c0fc8fbe294aa31dbaf1cff80f1c2fd940"
@@ -80,6 +83,7 @@ fn main() {
     }
 
     let public_nonces: Vec<PubNonce> = secnonces.iter().map(|s| s.public_nonce()).collect();
+    println!("R_1: {}", public_nonces[0].R1);
 
     //let our_public_nonce = secnonce.public_nonce();
     //assert_eq!(
@@ -117,6 +121,7 @@ fn main() {
         //let k0 = SecretKey::from_byte_array(&blind_hash0).unwrap();
         //let k0 = Scalar::from_be_bytes(blind_hash0).unwrap();
         let k0 = Scalar::from_slice(&blind_hash0).unwrap();
+        let k0 = Scalar::one();
 
         let blind_hash1: [u8; 32] = Sha256::new()
             .chain_update(blinding_seed)
@@ -127,6 +132,7 @@ fn main() {
 
         //let k1 = SecretKey::from_byte_array(&blind_hash1).unwrap();
         let k1 = Scalar::from_slice(&blind_hash1).unwrap();
+        let k1 = Scalar::one();
         blinding_factors.push((k0, k1));
     }
 
@@ -141,33 +147,91 @@ fn main() {
             //b *
             let pubkey: Point = pubkeys[i].into();
             let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
+            let x_prime = c * pubkey;
+            println!("X'_1: {}", x_prime);
             let bc = *b * c; //* pubkey
+            println!("bc: {}", hex::encode(bc.serialize()));
             bc * pubkey
         })
         .sum();
 
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
-    let sign_nonce = agg_nonce + aas * G + bbs;
+    println!("R: {}", agg_nonce);
+    //let sign_nonce = agg_nonce + aas * G + bbs;
+    println!("b_1*c_1*X_1: {}", bbs);
+    let sign_nonce = agg_nonce + bbs;
+    println!("sign nonce R': {} (R+bcx). has even={}, to_even={}", sign_nonce, sign_nonce.has_even_y(), sign_nonce.to_even_y());
+    //let sign_nonce = sign_nonce.to_even_y();
 
     let adaptor_point = MaybePoint::Infinity;
-    let adapted_nonce = agg_nonce + adaptor_point;
+    let adapted_nonce = sign_nonce + adaptor_point;
 
     let nonce_x_bytes = adapted_nonce.serialize_xonly();
-    let e: MaybeScalar = compute_challenge_hash_tweak(&nonce_x_bytes, &aggregated_pubkey.into(), &message);
+    let e: MaybeScalar =
+        compute_challenge_hash_tweak(&nonce_x_bytes, &aggregated_pubkey.into(), &message);
+    let ee: Scalar = e.try_into().unwrap();
+    println!("e: {}", hex::encode(ee.serialize()));
+    let e_1 = e + blinding_factors[0].1;
+    println!("e_1: {}", hex::encode(e_1.serialize()));
+
+    let pubkey: Point = pubkeys[0].into();
+
+    let c1 = key_agg_ctx.key_coefficient(pubkey).unwrap();
+    println!("c_1: {}", hex::encode(c1.serialize()));
+    let c1_neg = -c1;
+    println!("-c_1: {}", hex::encode(c1_neg.serialize()));
+    let x_prime = c1 * pubkey;
+    println!("X'_1: {}", x_prime);
+
+    let x1: Scalar = seckeys[0].into();
+    let r1 = secnonces[0].k1;
+    println!("r1: {}", hex::encode(r1.serialize()));
+    println!("x1: {}", hex::encode(x1.serialize()));
+    let choice: subtle::Choice = 1u8.into();
+    let d = x1.negate_if(choice);
+    println!("x1.neg: {}", hex::encode(d.serialize()));
+    let s1 = r1 + e_1 * c1 * x1;
+    let s1_neg = r1 + e_1 * c1 * d;
+    println!("s'_1 = r_1+e_1*c_1*x_1={}", hex::encode(s1.serialize()));
+    println!(
+        "s'_1 = r_1+e_1*c_1*x_1_neg={}",
+        hex::encode(s1_neg.serialize())
+    );
 
     let partial_signatures: Vec<PartialSignature> = secnonces
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let sign: MaybeScalar= musig2::sign_partial_challenge(
+            let ep = if sign_nonce.has_even_y() ^ aggregated_pubkey.has_even_y() {
+                e - blinding_factors[i].1
+            } else {
+                e + blinding_factors[i].1
+            };
+            //let ep = if sign_nonce.has_even_y() {
+            //    e + blinding_factors[i].1
+            //} else {
+            //    e - blinding_factors[i].1
+            //};
+
+            //let ep = if aggregated_pubkey.has_even_y(){
+            //    e + blinding_factors[i].1
+            //} else {
+            //    e - blinding_factors[i].1
+            //};
+
+            let sign: MaybeScalar = musig2::sign_partial_challenge(
                 &key_agg_ctx,
                 seckeys[i],
                 s.clone(),
-                agg_nonce,
-                e,
-            ).expect("error creating partial signature");
+                sign_nonce,
+                //sign_nonce,
+                ep,
+            )
+            .expect("error creating partial signature");
 
+            println!("s'_1: {}", hex::encode(sign.serialize()));
             sign
+            // + blinding_factors[i].0
         })
         .collect();
 
@@ -210,22 +274,49 @@ fn main() {
         let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
         let their_pubnonce = &public_nonces[i];
 
+        let ep = if sign_nonce.has_even_y() ^ aggregated_pubkey.has_even_y() {
+            e - blinding_factors[i].1
+        } else {
+            e + blinding_factors[i].1
+        };
+//        let ep = if aggregated_pubkey.has_even_y(){
+//            e + blinding_factors[i].1
+//        } else {
+//            e - blinding_factors[i].1
+//        };
+
+
         verify_partial_challenge(
             &key_agg_ctx,
             partial_signature,
-            agg_nonce,
+            sign_nonce,
             adaptor_point,
             their_pubkey,
             &their_pubnonce,
-            e,
+            ep,
         )
         .expect("received invalid signature from a peer");
     }
 
-    let final_signature: [u8; 64] = musig2::aggregate_partial_signatures(
+    let unblinded_sigs: Vec<PartialSignature> = partial_signatures
+        .iter()
+        .enumerate()
+        .map(|(i, s)| *s + blinding_factors[i].0)
+        .collect();
+
+    println!("s*G={}", s1 * G);
+    println!("s_neg*G={}", s1_neg * G);
+    let x_prime_neg = x_prime.negate_if(choice);
+    println!("R'+e*X':{}", sign_nonce + e * x_prime);
+    println!("R'+e*X'_neg:{}", sign_nonce + e * x_prime_neg);
+    println!("R+X_1:{}", agg_nonce + pubkey);
+
+    let final_signature: [u8; 64] = musig2::aggregate_partial_signatures_final_nonce(
         &key_agg_ctx,
-        agg_nonce.try_into().unwrap(),
+        sign_nonce.try_into().unwrap(),
+        //sign_nonce.try_into().unwrap(),
         partial_signatures,
+        //unblinded_sigs,
         message,
     )
     .expect("error aggregating signatures");
