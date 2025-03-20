@@ -301,7 +301,13 @@ fn main() {
     let unblinded_sigs: Vec<PartialSignature> = partial_signatures
         .iter()
         .enumerate()
-        .map(|(i, s)| *s + blinding_factors[i].0)
+        .map(|(i, s)| {
+            if sign_nonce.has_even_y() {
+                *s + blinding_factors[i].0
+            } else {
+                *s - blinding_factors[i].0
+            }
+        })
         .collect();
 
     println!("s*G={}", s1 * G);
