@@ -25,7 +25,7 @@ fn main() {
     //           .unwrap(),
     //   ];
 
-    let num_signers = 6;
+    let num_signers = 5;
     let seckey_seed = [0xABu8; 32];
 
     let secp = Secp256k1::new();
@@ -121,7 +121,7 @@ fn main() {
         //let k0 = SecretKey::from_byte_array(&blind_hash0).unwrap();
         //let k0 = Scalar::from_be_bytes(blind_hash0).unwrap();
         let k0 = Scalar::from_slice(&blind_hash0).unwrap();
-        let k0 = Scalar::one();
+    //    let k0 = Scalar::one();
 
         let blind_hash1: [u8; 32] = Sha256::new()
             .chain_update(blinding_seed)
@@ -132,7 +132,7 @@ fn main() {
 
         //let k1 = SecretKey::from_byte_array(&blind_hash1).unwrap();
         let k1 = Scalar::from_slice(&blind_hash1).unwrap();
-        let k1 = Scalar::one();
+        //let k1 = Scalar::one();
         blinding_factors.push((k0, k1));
     }
 
@@ -157,9 +157,9 @@ fn main() {
 
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
     println!("R: {}", agg_nonce);
-    //let sign_nonce = agg_nonce + aas * G + bbs;
+    let sign_nonce = agg_nonce + aas * G + bbs;
     println!("b_1*c_1*X_1: {}", bbs);
-    let sign_nonce = agg_nonce + bbs;
+    //let sign_nonce = agg_nonce + bbs;
     println!("sign nonce R': {} (R+bcx). has even={}, to_even={}", sign_nonce, sign_nonce.has_even_y(), sign_nonce.to_even_y());
     //let sign_nonce = sign_nonce.to_even_y();
 
@@ -315,8 +315,8 @@ fn main() {
         &key_agg_ctx,
         sign_nonce.try_into().unwrap(),
         //sign_nonce.try_into().unwrap(),
-        partial_signatures,
-        //unblinded_sigs,
+        //partial_signatures,
+        unblinded_sigs,
         message,
     )
     .expect("error aggregating signatures");
