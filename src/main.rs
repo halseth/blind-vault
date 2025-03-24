@@ -1,5 +1,4 @@
 use musig2::secp::Point;
-use std::ops::Neg;
 use musig2::secp::{G, MaybePoint, MaybeScalar};
 use musig2::{AggNonce, SecNonce, compute_challenge_hash_tweak, verify_partial_challenge};
 use musig2::{
@@ -9,6 +8,7 @@ use musig2::{
 use musig2::{KeyAggContext, tagged_hashes};
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
+use std::ops::Neg;
 
 fn main() {
     println!("Hello, world!");
@@ -118,10 +118,7 @@ fn main() {
             .finalize()
             .into();
 
-        //let k0 = SecretKey::from_byte_array(&blind_hash0).unwrap();
-        //let k0 = Scalar::from_be_bytes(blind_hash0).unwrap();
         let k0 = Scalar::from_slice(&blind_hash0).unwrap();
-    //    let k0 = Scalar::one();
 
         let blind_hash1: [u8; 32] = Sha256::new()
             .chain_update(blinding_seed)
@@ -130,9 +127,7 @@ fn main() {
             .finalize()
             .into();
 
-        //let k1 = SecretKey::from_byte_array(&blind_hash1).unwrap();
         let k1 = Scalar::from_slice(&blind_hash1).unwrap();
-        //let k1 = Scalar::one();
         blinding_factors.push((k0, k1));
     }
 
@@ -160,7 +155,12 @@ fn main() {
     let sign_nonce = agg_nonce + aas * G + bbs;
     println!("b_1*c_1*X_1: {}", bbs);
     //let sign_nonce = agg_nonce + bbs;
-    println!("sign nonce R': {} (R+bcx). has even={}, to_even={}", sign_nonce, sign_nonce.has_even_y(), sign_nonce.to_even_y());
+    println!(
+        "sign nonce R': {} (R+bcx). has even={}, to_even={}",
+        sign_nonce,
+        sign_nonce.has_even_y(),
+        sign_nonce.to_even_y()
+    );
     //let sign_nonce = sign_nonce.to_even_y();
 
     let adaptor_point = MaybePoint::Infinity;
@@ -198,6 +198,7 @@ fn main() {
         hex::encode(s1_neg.serialize())
     );
 
+    let parity = aggregated_pubkey.parity(); // ^ key_agg_ctx.parity_acc;
     let partial_signatures: Vec<PartialSignature> = secnonces
         .iter()
         .enumerate()
@@ -207,24 +208,14 @@ fn main() {
             } else {
                 e + blinding_factors[i].1
             };
-            //let ep = if sign_nonce.has_even_y() {
-            //    e + blinding_factors[i].1
-            //} else {
-            //    e - blinding_factors[i].1
-            //};
 
-            //let ep = if aggregated_pubkey.has_even_y(){
-            //    e + blinding_factors[i].1
-            //} else {
-            //    e - blinding_factors[i].1
-            //};
-
+            let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
             let sign: MaybeScalar = musig2::sign_partial_challenge(
-                &key_agg_ctx,
+                key_agg_ctx.key_coefficient(their_pubkey).unwrap(),
+                parity,
                 seckeys[i],
                 s.clone(),
-                sign_nonce,
-                //sign_nonce,
+                sign_nonce.parity(),
                 ep,
             )
             .expect("error creating partial signature");
@@ -279,18 +270,12 @@ fn main() {
         } else {
             e + blinding_factors[i].1
         };
-//        let ep = if aggregated_pubkey.has_even_y(){
-//            e + blinding_factors[i].1
-//        } else {
-//            e - blinding_factors[i].1
-//        };
-
 
         verify_partial_challenge(
-            &key_agg_ctx,
+            key_agg_ctx.key_coefficient(their_pubkey).unwrap(),
+            parity,
             partial_signature,
-            sign_nonce,
-            adaptor_point,
+            sign_nonce.parity(),
             their_pubkey,
             &their_pubnonce,
             ep,
