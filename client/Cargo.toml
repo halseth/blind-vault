@@ -1,0 +1,14 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = {path = "../shared"}
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0.219", features = ["derive"] }
+clap = { version = "4.5.32", features = ["derive"] }
+serde_json = "1.0.140"
+hex = "0.4.3"
+rand = "0.9.0"

@@ -1,0 +1,16 @@
+[package]
+name = "signer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = {path = "../shared"}
+musig2 = { path = "../../musig2" , features = ["rand"]}
+secp256k1 = { version = "0.30.0", features = ["rand"] }
+digest = "0.10.7"
+sha2 = "0.10.8"
+hex = "0.4.3"
+subtle = "2.6.1"
+actix-web = "4.10.2"
+rand = "0.8.5"
+serde = { version = "1.0.219", features = ["derive"] }
