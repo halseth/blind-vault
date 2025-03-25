@@ -89,9 +89,9 @@ async fn session_sign(
         .sessions
         .lock()
         .unwrap()
-        .get(&id.to_string())
-        .unwrap()
-        .clone();
+        .remove(&id.to_string())
+        .unwrap();
+
     let seckey = session.secret_key;
     let secnonce = session.secret_nonce;
 
