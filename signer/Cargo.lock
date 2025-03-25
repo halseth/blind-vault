@@ -882,6 +882,7 @@ dependencies = [
 [[package]]
 name = "musig2"
 version = "0.2.4"
+source = "git+https://github.com/halseth/musig2.git?branch=ephemeral-sign#fe8a72a73295b014f94428859e364d17be425267"
 dependencies = [
  "base16ct",
  "hex",
