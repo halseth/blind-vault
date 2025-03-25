@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
+use std::net;
+use std::net::SocketAddr;
 use std::sync::Mutex;
+use clap::Parser;
+use std::str::FromStr;
 
 // This struct represents state
 struct AppState {
@@ -23,8 +27,27 @@ struct SessionData {
     secret_nonce: SecNonce,
 }
 
+#[derive(Debug, Parser)]
+#[command(verbatim_doc_comment)]
+struct Args {
+    #[arg(long)]
+    listen: Option<String>,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    let args = Args::parse();
+
+    let bind: SocketAddr = match args.listen {
+        Some(listen) => SocketAddr::from_str(&listen).unwrap(),
+        None => {
+            println!("specify --listen");
+            return Ok(())
+        },
+    };
+
+    println!("listening on {}", bind);
+
     let app_state = web::Data::new(AppState {
         app_name: String::from("Actix Web"),
         sessions: Mutex::new(HashMap::new()),
@@ -35,7 +58,7 @@ async fn main() -> std::io::Result<()> {
             .service(session_init)
             .service(session_sign)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(bind)?
     .run()
     .await
 }
