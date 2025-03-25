@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
     println!("agg pubkey X: {}", aggregated_pubkey);
 
-    let blinding_seed = [0xAAu8; 32];
+    let blinding_seed = rand::thread_rng().random::<[u8; 32]>();
     let mut blinding_factors = vec![];
     for i in 0..num_signers {
         let blind_hash0: [u8; 32] = Sha256::new()
