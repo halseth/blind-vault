@@ -74,7 +74,7 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
     let pubkey = secret_key.public_key(&secp);
 
     let secnonce = musig2::SecNonceBuilder::new(&mut rand::rngs::OsRng)
-        .with_message(b"hello world!")
+        .with_message(&id.to_string())
         .build();
 
     let pubnonce = secnonce.public_nonce();
