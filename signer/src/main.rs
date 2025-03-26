@@ -116,8 +116,7 @@ async fn session_sign(
     let session_id = id.to_string();
 
     // Delete all data about this session, ensuring we will never sign twice with same key.
-    let mut map = data.sessions.lock().unwrap();
-    let session = match map.remove(&session_id) {
+    let session = match data.sessions.lock().unwrap().remove(&session_id) {
         None => return Err(ResourceNotFound.into()),
         Some(s) => s,
     };
