@@ -1,8 +1,13 @@
-use actix_web::error::{PathError, UrlencodedError};
+use actix_web::error::DispatchError::InternalError;
+use actix_web::error::UrlGenerationError::ResourceNotFound;
+use actix_web::error::{
+    ErrorInternalServerError, JsonPayloadError, PathError, PayloadError, UrlencodedError,
+};
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
 use hex::{FromHexError, ToHex};
 use musig2::secp::MaybeScalar;
+use musig2::secp::errors::InvalidScalarString;
 use musig2::{PubNonce, SecNonce};
 use secp256k1::{PublicKey, Secp256k1, SecretKey, rand};
 use serde::{Deserialize, Serialize};
@@ -58,10 +63,6 @@ async fn main() -> std::io::Result<()> {
 
 #[get("/init/{id}")]
 async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Result<impl Responder> {
-    let secp = Secp256k1::new();
-    let secret_key = SecretKey::new(&mut rand::thread_rng());
-    let pubkey = secret_key.public_key(&secp);
-
     let session_id = id.to_string();
 
     // Make sure session id is valid hex encoding of 32 bytes.
@@ -76,6 +77,9 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
 
     println!("session_id: {}", session_id);
 
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::new(&mut rand::thread_rng());
+    let pubkey = secret_key.public_key(&secp);
     let secnonce = musig2::SecNonceBuilder::new(&mut rand::rngs::OsRng)
         .with_message(&session_id)
         .build();
@@ -99,7 +103,6 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
         .lock()
         .unwrap()
         .insert(session_id, session_data);
-    println!("map: {:?}", data.sessions.lock().unwrap());
     Ok(web::Json(resp))
 }
 
@@ -110,31 +113,41 @@ async fn session_sign(
     req: web::Json<SignReq>,
 ) -> Result<impl Responder> {
     println!("req: {:?}", req);
+    let session_id = id.to_string();
 
-    let session = data
-        .sessions
-        .lock()
-        .unwrap()
-        .remove(&id.to_string())
-        .unwrap();
+    // Delete all data about this session, ensuring we will never sign twice with same key.
+    let mut map = data.sessions.lock().unwrap();
+    let session = match map.remove(&session_id) {
+        None => return Err(ResourceNotFound.into()),
+        Some(s) => s,
+    };
 
     let seckey = session.secret_key;
     let secnonce = session.secret_nonce;
 
-    let key_coeff = MaybeScalar::from_hex(&req.key_coeff).unwrap();
-    let ep = MaybeScalar::from_hex(&req.e).unwrap();
+    let key_coeff = match MaybeScalar::from_hex(&req.key_coeff) {
+        Ok(k) => k,
+        Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
+    };
+    let ep = match MaybeScalar::from_hex(&req.e) {
+        Ok(e) => e,
+        Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
+    };
 
-    let sig: MaybeScalar = musig2::sign_partial_challenge(
+    let sig: MaybeScalar = match musig2::sign_partial_challenge(
         key_coeff,
         req.key_parity.into(),
         seckey,
         secnonce,
         req.nonce_parity.into(),
         ep,
-    )
-    .expect("error creating partial signature");
+    ) {
+        Ok(s) => s,
+        Err(e) => return Err(ErrorInternalServerError(e)),
+    };
 
     let resp = SignResp {
+        session_id,
         sig: sig.encode_hex(),
     };
     Ok(web::Json(resp))

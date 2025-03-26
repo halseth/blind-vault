@@ -17,6 +17,7 @@ pub struct SignReq {
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SignResp{
+    pub session_id: String,
     pub sig: String,
 }
 
