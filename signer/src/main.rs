@@ -1,23 +1,19 @@
-use actix_web::error::DispatchError::InternalError;
 use actix_web::error::UrlGenerationError::ResourceNotFound;
 use actix_web::error::{
-    ErrorInternalServerError, JsonPayloadError, PathError, PayloadError, UrlencodedError,
+    ErrorInternalServerError, JsonPayloadError, PayloadError, UrlencodedError,
 };
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
-use hex::{FromHexError, ToHex};
+use hex::ToHex;
 use musig2::secp::MaybeScalar;
-use musig2::secp::errors::InvalidScalarString;
-use musig2::{PubNonce, SecNonce};
-use secp256k1::{PublicKey, Secp256k1, SecretKey, rand};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use musig2::SecNonce;
+use secp256k1::{Secp256k1, SecretKey, rand};
+use serde::Serialize;
+use sha2::Digest;
 use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::net;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Mutex;
 
 // This struct represents state
