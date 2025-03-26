@@ -1,6 +1,7 @@
+use actix_web::error::{PathError, UrlencodedError};
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
-use hex::ToHex;
+use hex::{FromHexError, ToHex};
 use musig2::secp::MaybeScalar;
 use musig2::{PubNonce, SecNonce};
 use secp256k1::{PublicKey, Secp256k1, SecretKey, rand};
@@ -8,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::net;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -54,39 +56,49 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-async fn hello() -> impl Responder {
-    "Hello, world!"
-}
-
 #[get("/init/{id}")]
 async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Result<impl Responder> {
     let secp = Secp256k1::new();
     let secret_key = SecretKey::new(&mut rand::thread_rng());
     let pubkey = secret_key.public_key(&secp);
 
+    let session_id = id.to_string();
+
+    // Make sure session id is valid hex encoding of 32 bytes.
+    match hex::decode(session_id.clone()) {
+        Ok(h) => {
+            if h.len() != 32 {
+                return Err(UrlencodedError::Encoding.into());
+            }
+        }
+        Err(e) => return Err(UrlencodedError::Encoding.into()),
+    }
+
+    println!("session_id: {}", session_id);
+
     let secnonce = musig2::SecNonceBuilder::new(&mut rand::rngs::OsRng)
-        .with_message(&id.to_string())
+        .with_message(&session_id)
         .build();
 
     let pubnonce = secnonce.public_nonce();
 
     let resp = InitResp {
-        session_id: id.to_string(),
+        session_id: session_id.clone(),
         pubkey: hex::encode(pubkey.serialize()),
         pubnonce: hex::encode(pubnonce.serialize()),
     };
 
     let session_data = SessionData {
-        session_id: id.to_string(),
+        session_id: session_id.clone(),
         init_resp: resp.clone(),
         secret_key: secret_key.clone(),
-        secret_nonce: secnonce,
+        secret_nonce: secnonce.clone(),
     };
 
     data.sessions
         .lock()
         .unwrap()
-        .insert(id.to_string(), session_data);
+        .insert(session_id, session_data);
     println!("map: {:?}", data.sessions.lock().unwrap());
     Ok(web::Json(resp))
 }
