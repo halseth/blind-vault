@@ -1,4 +1,5 @@
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
+use clap::Parser;
 use hex::ToHex;
 use musig2::secp::MaybeScalar;
 use musig2::{PubNonce, SecNonce};
@@ -9,13 +10,11 @@ use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
 use std::net;
 use std::net::SocketAddr;
-use std::sync::Mutex;
-use clap::Parser;
 use std::str::FromStr;
+use std::sync::Mutex;
 
 // This struct represents state
 struct AppState {
-    app_name: String,
     sessions: Mutex<HashMap<String, SessionData>>,
 }
 
@@ -31,25 +30,17 @@ struct SessionData {
 #[command(verbatim_doc_comment)]
 struct Args {
     #[arg(long)]
-    listen: Option<String>,
+    listen: SocketAddr,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    let bind: SocketAddr = match args.listen {
-        Some(listen) => SocketAddr::from_str(&listen).unwrap(),
-        None => {
-            println!("specify --listen");
-            return Ok(())
-        },
-    };
-
+    let bind = args.listen;
     println!("listening on {}", bind);
 
     let app_state = web::Data::new(AppState {
-        app_name: String::from("Actix Web"),
         sessions: Mutex::new(HashMap::new()),
     });
     HttpServer::new(move || {
