@@ -23,6 +23,12 @@ use std::sync::Mutex;
 struct Args {
     #[arg(long)]
     cfg: Option<String>,
+
+    #[arg(long)]
+    listen: SocketAddr,
+
+    #[arg(long)]
+    server: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -30,18 +36,49 @@ struct Config {
     pub signers: Vec<String>,
 }
 
+// This struct represents state
+struct AppState {
+    sessions: Mutex<HashMap<String, SessionData>>,
+    cfg: Config,
+}
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let secp = Secp256k1::new();
-    let message = "hello interwebz!";
+#[derive(Clone, Debug)]
+struct SessionData {
+    session_id: String,
+    init_resp: InitResp,
+    secret_key: SecretKey,
+    secret_nonce: SecNonce,
+}
 
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let cfg: Config = serde_json::from_str(&args.cfg.unwrap()).unwrap();
     println!("config: {:?}", cfg);
 
-    run_example(cfg).await.unwrap();
-    return Ok(());
+    if !args.server {
+        run_example(cfg).await.unwrap();
+        return Ok(());
+    }
+
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+
+    let bind = args.listen;
+    println!("listening on {}", bind);
+
+    let app_state = web::Data::new(AppState {
+        sessions: Mutex::new(HashMap::new()),
+        cfg: cfg,
+    });
+    HttpServer::new(move || {
+        App::new()
+            .wrap(Logger::default())
+            .app_data(app_state.clone())
+            .service(sign_psbt)
+    })
+    .bind(bind)?
+    .run()
+    .await
 }
 
 async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -110,6 +147,41 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .expect("aggregated signature must be valid");
 
     Ok(())
+}
+
+
+#[post("/psbt")]
+async fn sign_psbt(
+    data: web::Data<AppState>,
+    //id: web::Path<String>,
+    req: web::Json<SignPsbtReq>,
+) -> actix_web::Result<impl Responder> {
+    println!("req: {:?}", req);
+
+    let cfg = data.cfg.clone();
+
+    let sessions = init_signer_sessions(&cfg).await?;
+    let num_signers = sessions.len();
+
+    let script_pubkey_1 =
+        Address::from_str("bc1p80lanj0xee8q667aqcnn0xchlykllfsz3gu5skfv9vjsytaujmdqtv52vu")
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap()
+            .script_pubkey();
+
+    let mut psbt = req.psbt.clone();
+    if let Some(output) = psbt.unsigned_tx.output.get_mut(0) {
+        output.script_pubkey = script_pubkey_1.clone();
+    }
+
+    println!("psbt: {:?}", psbt);
+
+    let body_json = serde_json::to_string(&psbt).unwrap();
+    println!("body_json: {}", body_json);
+
+    let resp = SignPsbtResp {};
+    Ok(web::Json(resp))
 }
 
 struct SigningSession {

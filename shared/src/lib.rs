@@ -1,3 +1,4 @@
+use bitcoin::Psbt;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -16,8 +17,15 @@ pub struct SignReq {
     pub e: String,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SignResp{
+pub struct SignResp {
     pub session_id: String,
     pub sig: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SignPsbtReq {
+    pub psbt: Psbt,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SignPsbtResp {}
