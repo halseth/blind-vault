@@ -1,6 +1,9 @@
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
-use bitcoin::{Address, Network, TxOut};
+use bitcoin::KnownHrp::Mainnet;
+use bitcoin::params::MAINNET;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::{Address, Network, TxOut, XOnlyPublicKey};
 use clap::Parser;
 use hex::ToHex;
 use musig2::secp::{G, MaybePoint, MaybeScalar, Point, Scalar};
@@ -9,7 +12,7 @@ use musig2::{
     verify_partial_challenge,
 };
 use rand::Rng;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp};
@@ -127,7 +130,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         sign_nonce,
         e,
     )
-        .await?;
+    .await?;
 
     verify_partial_sigs(
         &public_nonces,
@@ -149,7 +152,6 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
 #[post("/psbt")]
 async fn sign_psbt(
     data: web::Data<AppState>,
@@ -158,10 +160,21 @@ async fn sign_psbt(
 ) -> actix_web::Result<impl Responder> {
     println!("req: {:?}", req);
 
+    let secp = Secp256k1::new();
+
     let cfg = data.cfg.clone();
 
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
+
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_pubkey, aggregated_nonce) =
+        aggregate_pubs(&sessions);
+
+    let pk = bitcoin::secp256k1::PublicKey::from_slice(&aggregated_pubkey.serialize()).unwrap();
+    let (xpub, _) = pk.x_only_public_key();
+
+    let tap = Address::p2tr(&secp, xpub, None, Mainnet);
+    let sp = tap.script_pubkey();
 
     let script_pubkey_1 =
         Address::from_str("bc1p80lanj0xee8q667aqcnn0xchlykllfsz3gu5skfv9vjsytaujmdqtv52vu")
@@ -172,7 +185,7 @@ async fn sign_psbt(
 
     let mut psbt = req.psbt.clone();
     if let Some(output) = psbt.unsigned_tx.output.get_mut(0) {
-        output.script_pubkey = script_pubkey_1.clone();
+        output.script_pubkey = sp.clone();
     }
 
     println!("psbt: {:?}", psbt);
@@ -214,8 +227,6 @@ async fn init_signer_sessions(
 
     Ok(sessions)
 }
-
-
 
 fn aggregate_partial_sigs(
     message: &str,
