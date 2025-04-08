@@ -1,9 +1,11 @@
 use actix_web::middleware::Logger;
-use actix_web::{App, HttpServer, Responder, Result, get, post, web};
+use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::KnownHrp::Mainnet;
-use bitcoin::params::MAINNET;
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{Address, Network, TxOut, XOnlyPublicKey};
+use bitcoin::{
+    Address, Network,
+};
 use clap::Parser;
 use hex::ToHex;
 use musig2::secp::{G, MaybePoint, MaybeScalar, Point, Scalar};
@@ -92,8 +94,11 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let num_signers = sessions.len();
     println!("num signers: {}", num_signers);
 
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_pubkey, aggregated_nonce) =
-        aggregate_pubs(&sessions);
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) = aggregate_pubs(&sessions);
+
+    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
+    println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
+    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
 
     let blinding_factors = gen_blinding_factors(num_signers);
 
@@ -117,15 +122,12 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let nonce_x_bytes = adapted_nonce.serialize_xonly();
     let e: MaybeScalar =
-        compute_challenge_hash_tweak(&nonce_x_bytes, &aggregated_pubkey.into(), &message);
-
-    let key_parity = aggregated_pubkey.parity(); // ^ key_agg_ctx.parity_acc;
-    let nonce_parity = sign_nonce.parity();
+        compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
 
     let partial_signatures = request_partial_sigs(
         sessions,
         &key_agg_ctx,
-        aggregated_pubkey,
+        tweaked_aggregated_pubkey,
         &blinding_factors,
         sign_nonce,
         e,
@@ -135,7 +137,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     verify_partial_sigs(
         &public_nonces,
         &key_agg_ctx,
-        aggregated_pubkey,
+        tweaked_aggregated_pubkey,
         &blinding_factors,
         sign_nonce,
         e,
@@ -146,7 +148,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
 
-    musig2::verify_single(aggregated_pubkey, &final_signature, message)
+    musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
         .expect("aggregated signature must be valid");
 
     Ok(())
@@ -167,11 +169,16 @@ async fn sign_psbt(
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
 
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_pubkey, aggregated_nonce) =
-        aggregate_pubs(&sessions);
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) = aggregate_pubs(&sessions);
 
-    let pk = bitcoin::secp256k1::PublicKey::from_slice(&aggregated_pubkey.serialize()).unwrap();
+    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
+    println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
+    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+
+    let pk = bitcoin::secp256k1::PublicKey::from_slice(&untweaked_aggregated_pubkey.serialize())
+        .unwrap();
     let (xpub, _) = pk.x_only_public_key();
+    println!("agg pubkey: {} x-only:{}", pk, xpub);
 
     let tap = Address::p2tr(&secp, xpub, None, Mainnet);
     let sp = tap.script_pubkey();
@@ -229,7 +236,7 @@ async fn init_signer_sessions(
 }
 
 fn aggregate_partial_sigs(
-    message: &str,
+    message: impl AsRef<[u8]>,
     key_agg_ctx: &KeyAggContext,
     sign_nonce: MaybePoint,
     unblinded_sigs: Vec<PartialSignature>,
@@ -272,7 +279,7 @@ fn verify_partial_sigs(
     e: MaybeScalar,
     partial_signatures: &Vec<MaybeScalar>,
 ) {
-    let key_parity = aggregated_pubkey.parity(); // ^ key_agg_ctx.parity_acc;
+    let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
     let nonce_parity = sign_nonce.parity();
 
     /// Signatures should be verified upon receipt and invalid signatures
@@ -281,7 +288,9 @@ fn verify_partial_sigs(
         let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
         let their_pubnonce = &public_nonces[i];
 
-        let ep = if sign_nonce.has_even_y() ^ aggregated_pubkey.has_even_y() {
+        let even_parity = bool::from(!challenge_parity);
+
+        let ep = if sign_nonce.has_even_y() ^ even_parity {
             e - blinding_factors[i].1
         } else {
             e + blinding_factors[i].1
@@ -289,7 +298,7 @@ fn verify_partial_sigs(
 
         verify_partial_challenge(
             key_agg_ctx.key_coefficient(their_pubkey).unwrap(),
-            key_parity,
+            challenge_parity,
             partial_signature,
             nonce_parity,
             their_pubkey,
@@ -307,8 +316,8 @@ async fn request_partial_sigs(
     blinding_factors: &Vec<(Scalar, Scalar)>,
     sign_nonce: MaybePoint,
     e: MaybeScalar,
-) -> Result<(Vec<MaybeScalar>), Box<dyn std::error::Error>> {
-    let key_parity = aggregated_pubkey.parity(); // ^ key_agg_ctx.parity_acc;
+) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
+    let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
     let nonce_parity = sign_nonce.parity();
 
     let mut partial_signatures = vec![];
@@ -316,7 +325,8 @@ async fn request_partial_sigs(
         let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
         let key_coeff = key_agg_ctx.key_coefficient(their_pubkey).unwrap();
 
-        let ep = if sign_nonce.has_even_y() ^ aggregated_pubkey.has_even_y() {
+        let even_parity = bool::from(!challenge_parity);
+        let ep = if sign_nonce.has_even_y() ^ even_parity {
             e - blinding_factors[i].1
         } else {
             e + blinding_factors[i].1
@@ -330,7 +340,7 @@ async fn request_partial_sigs(
 
         let body = SignReq {
             session_id: id.clone(),
-            key_parity: key_parity.unwrap_u8(),
+            challenge_parity: challenge_parity.unwrap_u8(),
             nonce_parity: nonce_parity.unwrap_u8(),
             key_coeff: key_coeff.encode_hex(),
             e: hex::encode(ep),
@@ -380,13 +390,7 @@ fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar)> {
 
 fn aggregate_pubs(
     sessions: &Vec<SigningSession>,
-) -> (
-    Vec<PublicKey>,
-    Vec<PubNonce>,
-    KeyAggContext,
-    Point,
-    AggNonce,
-) {
+) -> (Vec<PublicKey>, Vec<PubNonce>, KeyAggContext, AggNonce) {
     let (pubkeys, public_nonces): (Vec<PublicKey>, Vec<PubNonce>) = sessions
         .iter()
         .map(|session| {
@@ -398,17 +402,14 @@ fn aggregate_pubs(
         })
         .collect();
 
-    let key_agg_ctx = KeyAggContext::new(pubkeys.clone()).unwrap();
+    let mut key_agg_ctx = KeyAggContext::new(pubkeys.clone()).unwrap();
+    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+    println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
+    key_agg_ctx = key_agg_ctx.with_unspendable_taproot_tweak().unwrap();
     let aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
-    println!("agg pubkey X: {}", aggregated_pubkey);
+    println!("taptweaked agg pubkey X: {}", aggregated_pubkey);
 
     // We manually aggregate the nonces together and then construct our partial signature.
     let aggregated_nonce: AggNonce = public_nonces.iter().sum();
-    (
-        pubkeys,
-        public_nonces,
-        key_agg_ctx,
-        aggregated_pubkey,
-        aggregated_nonce,
-    )
+    (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce)
 }
