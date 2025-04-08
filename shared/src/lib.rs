@@ -11,7 +11,7 @@ pub struct InitResp {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SignReq {
     pub session_id: String,
-    pub key_parity: u8,
+    pub challenge_parity: u8,
     pub nonce_parity: u8,
     pub key_coeff: String,
     pub e: String,

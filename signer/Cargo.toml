@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 shared = {path = "../shared"}
-musig2 = { git = "https://github.com/halseth/musig2.git", branch = "ephemeral-sign" , features = ["rand"]}
+musig2 = { path = "../../musig2", features = ["rand"]}
 secp256k1 = { version = "0.30.0", features = ["rand"] }
 digest = "0.10.7"
 sha2 = "0.10.8"

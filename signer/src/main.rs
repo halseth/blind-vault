@@ -131,7 +131,7 @@ async fn session_sign(
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         key_coeff,
-        req.key_parity.into(),
+        req.challenge_parity.into(),
         seckey,
         secnonce,
         req.nonce_parity.into(),
