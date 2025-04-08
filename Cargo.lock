@@ -150,7 +150,7 @@ checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
 [[package]]
 name = "musig2"
 version = "0.2.4"
-source = "git+https://github.com/halseth/musig2.git?branch=ephemeral-sign#fe8a72a73295b014f94428859e364d17be425267"
+source = "git+https://github.com/halseth/musig2.git?rev=0581e4f#0581e4ffdc325fa2b2490c0d245241f93ba9a8a2"
 dependencies = [
  "base16ct",
  "hex",
