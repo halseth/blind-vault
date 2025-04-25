@@ -247,163 +247,161 @@ async fn sign_psbt(
     let body_json = serde_json::to_string(&deposit_psbt).unwrap();
     println!("body_json: {}", body_json);
 
-        // Create transaction that spends from this output (just into hardcoded dummy address for now).
-        // Future: add some sort of miniscript config for the spending transaction?
-        let utxos: Vec<TxOut> = deposit_psbt.unsigned_tx.output.to_vec();
-    
-        println!(
-            "deposit transaction Details: {:#?}",
-            deposit_psbt.unsigned_tx
-        );
-    
-        let deposit_tx = deposit_psbt.unsigned_tx.clone();
-        let txid = deposit_tx.compute_txid();
-        let op = OutPoint::from_str(format!("{}:0", txid).as_str()).unwrap();
-    
-        let spend_input = TxIn {
-            previous_output: op,
-            script_sig: ScriptBuf::default(),
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-            witness: Witness::default(),
-        };
-    
-        let spend_script_pubkey = Address::from_str(&req.fallback_addr)
-            .unwrap()
-            .require_network(args.network)
-            .unwrap()
-            .script_pubkey();
-    
-        let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee
-        let spend_output = TxOut {
-            value: spend_out_amt.unwrap(),
-            script_pubkey: spend_script_pubkey.clone(),
-        };
+    // Create transaction that spends from this output (just into hardcoded dummy address for now).
+    // Future: add some sort of miniscript config for the spending transaction?
+    let utxos: Vec<TxOut> = deposit_psbt.unsigned_tx.output.to_vec();
 
-        let spending_tx = Transaction {
-            version: transaction::Version::TWO,  // Post BIP 68.
-            lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
-            input: vec![spend_input],            // Input is 0-indexed.
-            output: vec![spend_output],          // Outputs, order does not matter.
-        };
-        println!(
-            "prevout: {}",
-            hex::encode(consensus::encode::serialize(&utxos[0]))
-        );
+    println!(
+        "deposit transaction Details: {:#?}",
+        deposit_psbt.unsigned_tx
+    );
 
-        let mut spend_psbt =
-            Psbt::from_unsigned_tx(spending_tx.clone()).expect("Could not create PSBT");
-        spend_psbt.inputs = vec![Input {
-            witness_utxo: Some(utxos[0].clone()),
-            //tap_key_origins: origins[0].clone(),
-            //tap_internal_key: Some(pk_input_1),
-            //sighash_type: Some(ty),
-            ..Default::default()
-        }];
+    let deposit_tx = deposit_psbt.unsigned_tx.clone();
+    let txid = deposit_tx.compute_txid();
+    let op = OutPoint::from_str(format!("{}:0", txid).as_str()).unwrap();
 
-        let mut cache = SighashCache::new(&spending_tx);
-        let (msg, sighash_type) = spend_psbt.sighash_taproot(0, &mut cache, None).unwrap();
-        let message = msg.as_ref();
+    let spend_input = TxIn {
+        previous_output: op,
+        script_sig: ScriptBuf::default(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Witness::default(),
+    };
 
-        println!("msg: {:?}", msg);
-        println!("sighash_type: {:?}", sighash_type);
+    let spend_script_pubkey = Address::from_str(&req.fallback_addr)
+        .unwrap()
+        .require_network(args.network)
+        .unwrap()
+        .script_pubkey();
 
-        let blinding_factors = gen_blinding_factors(num_signers);
+    let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee
+    let spend_output = TxOut {
+        value: spend_out_amt.unwrap(),
+        script_pubkey: spend_script_pubkey.clone(),
+    };
 
-        let aas: MaybeScalar = blinding_factors.iter().map(|(a, b)| *a).sum();
-        let bbs: MaybePoint = blinding_factors
-            .iter()
-            .enumerate()
-            .map(|(i, (a, b))| {
-                let pubkey: Point = pubkeys[i].into();
-                let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
-                let bc = *b * c;
-                bc * pubkey
-            })
-            .sum();
+    let spending_tx = Transaction {
+        version: transaction::Version::TWO,  // Post BIP 68.
+        lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
+        input: vec![spend_input],            // Input is 0-indexed.
+        output: vec![spend_output],          // Outputs, order does not matter.
+    };
+    println!(
+        "prevout: {}",
+        hex::encode(consensus::encode::serialize(&utxos[0]))
+    );
 
-        let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
-        let sign_nonce = agg_nonce + aas * G + bbs;
+    let mut spend_psbt =
+        Psbt::from_unsigned_tx(spending_tx.clone()).expect("Could not create PSBT");
+    spend_psbt.inputs = vec![Input {
+        witness_utxo: Some(utxos[0].clone()),
+        //tap_key_origins: origins[0].clone(),
+        //tap_internal_key: Some(pk_input_1),
+        //sighash_type: Some(ty),
+        ..Default::default()
+    }];
 
-        let adaptor_point = MaybePoint::Infinity;
-        let adapted_nonce = sign_nonce + adaptor_point;
+    let mut cache = SighashCache::new(&spending_tx);
+    let (msg, sighash_type) = spend_psbt.sighash_taproot(0, &mut cache, None).unwrap();
+    let message = msg.as_ref();
 
-        let nonce_x_bytes = adapted_nonce.serialize_xonly();
-        let e: MaybeScalar =
-            compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
+    println!("msg: {:?}", msg);
+    println!("sighash_type: {:?}", sighash_type);
 
-        let partial_signatures = request_partial_sigs(
-            sessions,
-            &key_agg_ctx,
-            tweaked_aggregated_pubkey,
-            &blinding_factors,
-            sign_nonce,
-            e,
-        )
-        .await?;
+    let blinding_factors = gen_blinding_factors(num_signers);
 
-        verify_partial_sigs(
-            &public_nonces,
-            &key_agg_ctx,
-            tweaked_aggregated_pubkey,
-            &blinding_factors,
-            sign_nonce,
-            e,
-            &partial_signatures,
-        );
+    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b)| *a).sum();
+    let bbs: MaybePoint = blinding_factors
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b))| {
+            let pubkey: Point = pubkeys[i].into();
+            let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
+            let bc = *b * c;
+            bc * pubkey
+        })
+        .sum();
 
-        let unblinded_sigs = unblind_partial_sigs(blinding_factors, sign_nonce, partial_signatures);
-    
-        let final_signature =
-            aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
+    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
+    let sign_nonce = agg_nonce + aas * G + bbs;
 
-        musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
-            .expect("aggregated signature must be valid");
+    let adaptor_point = MaybePoint::Infinity;
+    let adapted_nonce = sign_nonce + adaptor_point;
 
-        // final_signature[3] = 0;
+    let nonce_x_bytes = adapted_nonce.serialize_xonly();
+    let e: MaybeScalar =
+        compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
 
-        let signature = schnorr::Signature::from_slice(&final_signature).unwrap();
+    let partial_signatures = request_partial_sigs(
+        sessions,
+        &key_agg_ctx,
+        tweaked_aggregated_pubkey,
+        &blinding_factors,
+        sign_nonce,
+        e,
+    )
+    .await?;
 
-        let signature = taproot::Signature {
-            signature,
-            sighash_type,
-        };
+    verify_partial_sigs(
+        &public_nonces,
+        &key_agg_ctx,
+        tweaked_aggregated_pubkey,
+        &blinding_factors,
+        sign_nonce,
+        e,
+        &partial_signatures,
+    );
 
-        let mut sign_input = spend_psbt.inputs[0].clone();
+    let unblinded_sigs = unblind_partial_sigs(blinding_factors, sign_nonce, partial_signatures);
 
-        sign_input.tap_key_sig = Some(signature);
-        spend_psbt.inputs[0] = sign_input;
+    let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
 
-        // Step 4: Finalizer role; that finalizes the PSBT.
-        spend_psbt.inputs.iter_mut().for_each(|input| {
-            let mut script_witness: Witness = Witness::new();
-            script_witness.push(input.tap_key_sig.unwrap().to_vec());
-            input.final_script_witness = Some(script_witness);
+    musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
+        .expect("aggregated signature must be valid");
 
-            // Clear all the data fields as per the spec.
-            input.partial_sigs = BTreeMap::new();
-            input.sighash_type = None;
-            input.redeem_script = None;
-            input.witness_script = None;
-            input.bip32_derivation = BTreeMap::new();
-        });
+    let signature = schnorr::Signature::from_slice(&final_signature).unwrap();
 
-        let spend_tx = spend_psbt.clone().extract_tx().unwrap();
+    let signature = taproot::Signature {
+        signature,
+        sighash_type,
+    };
 
-        let serialized_signed_tx = consensus::encode::serialize_hex(&spend_tx);
-        let serialized_funding_tx = consensus::encode::serialize_hex(&deposit_tx);
-        println!("Transaction Details: {:#?}", spend_tx);
-        // check with:
-        // bitcoin-cli decoderawtransaction <RAW_TX> true
-        println!("Raw deposit Transaction: {}", serialized_funding_tx);
-        println!("Raw spending Transaction: {}", serialized_signed_tx);
-        let res = spend_tx
-            .verify(|op| {
-                println!("fetchin op {}", op);
-                Some(utxos[0].clone())
-            })
-            .unwrap();
-        println!("Transaction Result: {:#?}", res);
-    
+    let mut sign_input = spend_psbt.inputs[0].clone();
+
+    sign_input.tap_key_sig = Some(signature);
+    spend_psbt.inputs[0] = sign_input;
+
+    // Step 4: Finalizer role; that finalizes the PSBT.
+    spend_psbt.inputs.iter_mut().for_each(|input| {
+        let mut script_witness: Witness = Witness::new();
+        script_witness.push(input.tap_key_sig.unwrap().to_vec());
+        input.final_script_witness = Some(script_witness);
+
+        // Clear all the data fields as per the spec.
+        input.partial_sigs = BTreeMap::new();
+        input.sighash_type = None;
+        input.redeem_script = None;
+        input.witness_script = None;
+        input.bip32_derivation = BTreeMap::new();
+    });
+
+    let spend_tx = spend_psbt.clone().extract_tx().unwrap();
+
+    let serialized_signed_tx = consensus::encode::serialize_hex(&spend_tx);
+    let serialized_funding_tx = consensus::encode::serialize_hex(&deposit_tx);
+    println!("Transaction Details: {:#?}", spend_tx);
+    // check with:
+    // bitcoin-cli decoderawtransaction <RAW_TX> true
+    println!("Raw deposit Transaction: {}", serialized_funding_tx);
+    println!("Raw spending Transaction: {}", serialized_signed_tx);
+
+    let res = spend_tx
+        .verify(|op| {
+            println!("fetchin op {}", op);
+            Some(utxos[0].clone())
+        })
+        .unwrap();
+    println!("Transaction Result: {:#?}", res);
+
     let resp = SignPsbtResp {
         deposit_psbt: deposit_psbt,
         spend_psbt: spend_psbt,
