@@ -1,9 +1,15 @@
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::KnownHrp::Mainnet;
+use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
+use bitcoin::psbt::Input;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::{absolute, consensus, taproot, transaction, Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+use bitcoin::sighash::SighashCache;
+use bitcoin::{
+    Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    Witness, absolute, consensus, taproot, transaction,
+};
 use clap::Parser;
 use hex::ToHex;
 use musig2::secp::{G, MaybePoint, MaybeScalar, Point, Scalar};
@@ -12,7 +18,7 @@ use musig2::{
     verify_partial_challenge,
 };
 use rand::Rng;
-use secp256k1::{schnorr, PublicKey, SecretKey};
+use secp256k1::{PublicKey, SecretKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp};
@@ -20,9 +26,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Mutex;
-use bitcoin::psbt::Input;
-use bitcoin::sighash::SighashCache;
-use bitcoin::consensus_validation::TransactionExt;
 
 #[derive(Debug, Parser)]
 #[command(verbatim_doc_comment)]
@@ -35,6 +38,10 @@ struct Args {
 
     #[arg(long)]
     server: bool,
+
+    /// Network to use.
+    #[arg(long, default_value_t = Network::Signet)]
+    network: Network,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -211,6 +218,7 @@ async fn sign_psbt(
     let secp = Secp256k1::new();
 
     let cfg = data.cfg.clone();
+    let args = Args::parse();
 
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
@@ -229,53 +237,53 @@ async fn sign_psbt(
     let tap = Address::p2tr(&secp, xpub, None, Mainnet);
     let sp = tap.script_pubkey();
 
-    let script_pubkey_1 =
-        Address::from_str("bc1p80lanj0xee8q667aqcnn0xchlykllfsz3gu5skfv9vjsytaujmdqtv52vu")
-            .unwrap()
-            .require_network(Network::Bitcoin)
-            .unwrap()
-            .script_pubkey();
-
-    let mut psbt = req.psbt.clone();
-    if let Some(output) = psbt.unsigned_tx.output.get_mut(0) {
+    let mut deposit_psbt = req.psbt.clone();
+    if let Some(output) = deposit_psbt.unsigned_tx.output.get_mut(0) {
         output.script_pubkey = sp.clone();
     }
 
-    println!("psbt: {:?}", psbt);
+    println!("deposit: {:?}", deposit_psbt);
 
-    let body_json = serde_json::to_string(&psbt).unwrap();
+    let body_json = serde_json::to_string(&deposit_psbt).unwrap();
     println!("body_json: {}", body_json);
 
         // Create transaction that spends from this output (just into hardcoded dummy address for now).
         // Future: add some sort of miniscript config for the spending transaction?
-        let utxos: Vec<TxOut> = psbt.unsigned_tx.output.to_vec();
-        let dummy_utxos: Vec<TxOut> = dummy_unspent_transaction_outputs()
-            .into_iter()
-            .map(|(_, utxo)| utxo)
-            .collect();
-
-        println!("deposit transaction Details: {:#?}", psbt.unsigned_tx);
-
-        let funding_tx = psbt.unsigned_tx.clone();
-        let txid = psbt.unsigned_tx.compute_txid();
+        let utxos: Vec<TxOut> = deposit_psbt.unsigned_tx.output.to_vec();
+    
+        println!(
+            "deposit transaction Details: {:#?}",
+            deposit_psbt.unsigned_tx
+        );
+    
+        let deposit_tx = deposit_psbt.unsigned_tx.clone();
+        let txid = deposit_tx.compute_txid();
         let op = OutPoint::from_str(format!("{}:0", txid).as_str()).unwrap();
-        let input = TxIn {
+    
+        let spend_input = TxIn {
             previous_output: op,
             script_sig: ScriptBuf::default(),
             sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
             witness: Witness::default(),
         };
-
-        let output = TxOut {
-            value: utxos[0].value, //+Amount::from_sat(1),
-            script_pubkey: script_pubkey_1.clone(),
+    
+        let spend_script_pubkey = Address::from_str(&req.fallback_addr)
+            .unwrap()
+            .require_network(args.network)
+            .unwrap()
+            .script_pubkey();
+    
+        let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee
+        let spend_output = TxOut {
+            value: spend_out_amt.unwrap(),
+            script_pubkey: spend_script_pubkey.clone(),
         };
 
         let spending_tx = Transaction {
             version: transaction::Version::TWO,  // Post BIP 68.
             lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
-            input: vec![input],                  // Input is 0-indexed.
-            output: vec![output],                // Outputs, order does not matter.
+            input: vec![spend_input],            // Input is 0-indexed.
+            output: vec![spend_output],          // Outputs, order does not matter.
         };
         println!(
             "prevout: {}",
@@ -344,8 +352,8 @@ async fn sign_psbt(
         );
 
         let unblinded_sigs = unblind_partial_sigs(blinding_factors, sign_nonce, partial_signatures);
-
-        let mut final_signature =
+    
+        let final_signature =
             aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
 
         musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
@@ -382,13 +390,12 @@ async fn sign_psbt(
         let spend_tx = spend_psbt.clone().extract_tx().unwrap();
 
         let serialized_signed_tx = consensus::encode::serialize_hex(&spend_tx);
-        let serialized_funding_tx = consensus::encode::serialize_hex(&funding_tx);
+        let serialized_funding_tx = consensus::encode::serialize_hex(&deposit_tx);
         println!("Transaction Details: {:#?}", spend_tx);
         // check with:
         // bitcoin-cli decoderawtransaction <RAW_TX> true
-        println!("Raw funding Transaction: {}", serialized_funding_tx);
-        println!("Raw Transaction: {}", serialized_signed_tx);
-
+        println!("Raw deposit Transaction: {}", serialized_funding_tx);
+        println!("Raw spending Transaction: {}", serialized_signed_tx);
         let res = spend_tx
             .verify(|op| {
                 println!("fetchin op {}", op);
@@ -396,8 +403,11 @@ async fn sign_psbt(
             })
             .unwrap();
         println!("Transaction Result: {:#?}", res);
-
-    let resp = SignPsbtResp {};
+    
+    let resp = SignPsbtResp {
+        deposit_psbt: deposit_psbt,
+        spend_psbt: spend_psbt,
+    };
     Ok(web::Json(resp))
 }
 
