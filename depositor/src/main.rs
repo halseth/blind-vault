@@ -169,7 +169,6 @@ async fn main() {
     println!("Presigned Details: {:#?}", presigned_tx);
     println!("Raw presigned Transaction: {}", serialized_presigned_tx);
 
-    // TODO: verify presigned tx before signing
     let mut key_map: HashMap<bitcoin::XOnlyPublicKey, PrivateKey> = HashMap::new();
     let (xpub, _) = keypair.x_only_public_key();
     let sk = PrivateKey::new(keypair.secret_key(), args.network);
@@ -218,6 +217,15 @@ async fn main() {
         })
         .unwrap();
     println!("Transaction Result: {:#?}", res);
+
+    // TODO: verify presigned tx before signing
+    let res = presigned_tx
+        .verify(|op| {
+            println!("fetchin op {}", op);
+            Some(signed_tx.output[0].clone())
+        })
+        .unwrap();
+    println!("Pre-signed Transaction Result: {:#?}", res);
 }
 
 async fn initiate_sign(
