@@ -1,12 +1,10 @@
 use actix_web::error::UrlGenerationError::ResourceNotFound;
-use actix_web::error::{
-    ErrorInternalServerError, JsonPayloadError, PayloadError, UrlencodedError,
-};
+use actix_web::error::{ErrorInternalServerError, JsonPayloadError, PayloadError, UrlencodedError};
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
 use hex::ToHex;
-use musig2::secp::MaybeScalar;
 use musig2::SecNonce;
+use musig2::secp::MaybeScalar;
 use secp256k1::{Secp256k1, SecretKey, rand};
 use serde::Serialize;
 use sha2::Digest;
