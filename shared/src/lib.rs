@@ -25,7 +25,11 @@ pub struct SignResp {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SignPsbtReq {
     pub psbt: Psbt,
+    pub fallback_addr: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SignPsbtResp {}
+pub struct SignPsbtResp {
+    pub deposit_psbt: Psbt,
+    pub spend_psbt: Psbt,
+}
