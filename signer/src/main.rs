@@ -1,12 +1,10 @@
 use actix_web::error::UrlGenerationError::ResourceNotFound;
-use actix_web::error::{
-    ErrorInternalServerError, JsonPayloadError, PayloadError, UrlencodedError,
-};
+use actix_web::error::{ErrorInternalServerError, JsonPayloadError, PayloadError, UrlencodedError};
 use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
 use hex::ToHex;
-use musig2::secp::MaybeScalar;
 use musig2::SecNonce;
+use musig2::secp::MaybeScalar;
 use secp256k1::{Secp256k1, SecretKey, rand};
 use serde::Serialize;
 use sha2::Digest;
@@ -131,7 +129,7 @@ async fn session_sign(
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         key_coeff,
-        req.key_parity.into(),
+        req.challenge_parity.into(),
         seckey,
         secnonce,
         req.nonce_parity.into(),

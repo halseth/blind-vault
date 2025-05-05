@@ -2,13 +2,12 @@ use musig2::secp::Point;
 use musig2::secp::{G, MaybePoint, MaybeScalar};
 use musig2::{AggNonce, SecNonce, compute_challenge_hash_tweak, verify_partial_challenge};
 use musig2::{
-    CompactSignature, FirstRound, PartialSignature, PubNonce, SecNonceSpices, SecondRound,
+    PartialSignature, PubNonce,
     secp::Scalar,
 };
-use musig2::{KeyAggContext, tagged_hashes};
+use musig2::KeyAggContext;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use std::ops::Neg;
 
 fn main() {
     println!("Hello, world!");

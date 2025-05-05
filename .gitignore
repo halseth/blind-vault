@@ -2,3 +2,5 @@
 /client/target
 /signer/target
 /.idea
+/depositor/target
+/shared/target
