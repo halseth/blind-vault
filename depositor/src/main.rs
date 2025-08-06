@@ -13,9 +13,8 @@ use bitcoin::locktime::absolute;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey, Signing};
 use bitcoin::{
-    Address, Amount, Network, OutPoint, PrivateKey, Psbt, ScriptBuf, Sequence,
-    TapSighashType, Transaction, TxIn, TxOut, Witness, consensus,
-    transaction,
+    Address, Amount, Network, OutPoint, PrivateKey, Psbt, ScriptBuf, Sequence, TapSighashType,
+    Transaction, TxIn, TxOut, Witness, consensus, transaction,
 };
 use shared::{SignPsbtReq, SignPsbtResp};
 
@@ -243,14 +242,11 @@ async fn initiate_sign(
         psbt: psbt.clone(),
         fallback_addr: fallback_addr,
     };
-    let resp = client
-        .post(url)
-        .json(&body)
-        .send()
-        .await?
-        .json::<SignPsbtResp>()
-        .await?;
+    let resp = client.post(url).json(&body).send().await?;
     println!("{resp:#?}");
 
-    Ok(resp)
+    let j = resp.json::<SignPsbtResp>().await?;
+    println!("{j:#?}");
+
+    Ok(j)
 }

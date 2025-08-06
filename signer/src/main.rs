@@ -117,17 +117,24 @@ async fn session_sign(
 
     let seckey = session.secret_key;
     let secnonce = session.secret_nonce;
+    
 
     let key_coeff = match MaybeScalar::from_hex(&req.key_coeff) {
         Ok(k) => k,
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
     };
+    let b = match MaybeScalar::from_hex(&req.b) {
+        Ok(b) => b,
+        Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
+    };
+
     let ep = match MaybeScalar::from_hex(&req.e) {
         Ok(e) => e,
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
     };
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
+        b,
         key_coeff,
         req.challenge_parity.into(),
         seckey,
@@ -136,7 +143,10 @@ async fn session_sign(
         ep,
     ) {
         Ok(s) => s,
-        Err(e) => return Err(ErrorInternalServerError(e)),
+        Err(e) => {
+            println!("sign partial challenge error: {:?}", e);
+            return Err(ErrorInternalServerError(e))
+        },
     };
 
     let resp = SignResp {

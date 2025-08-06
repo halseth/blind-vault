@@ -14,6 +14,7 @@ pub struct SignReq {
     pub challenge_parity: u8,
     pub nonce_parity: u8,
     pub key_coeff: String,
+    pub b: String,
     pub e: String,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]

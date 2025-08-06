@@ -122,7 +122,8 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         })
         .sum();
 
-    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
+    let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
+    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
     let sign_nonce = agg_nonce + aas * G + bbs;
 
     let adaptor_point = MaybePoint::Infinity;
@@ -138,6 +139,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         tweaked_aggregated_pubkey,
         &blinding_factors,
         sign_nonce,
+        b,
         e,
     )
     .await?;
@@ -148,6 +150,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         tweaked_aggregated_pubkey,
         &blinding_factors,
         sign_nonce,
+        b,
         e,
         &partial_signatures,
     );
@@ -321,7 +324,8 @@ async fn sign_psbt(
         })
         .sum();
 
-    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce();
+    let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
+    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
     let sign_nonce = agg_nonce + aas * G + bbs;
 
     let adaptor_point = MaybePoint::Infinity;
@@ -337,6 +341,7 @@ async fn sign_psbt(
         tweaked_aggregated_pubkey,
         &blinding_factors,
         sign_nonce,
+        b,
         e,
     )
     .await?;
@@ -347,6 +352,7 @@ async fn sign_psbt(
         tweaked_aggregated_pubkey,
         &blinding_factors,
         sign_nonce,
+        b,
         e,
         &partial_signatures,
     );
@@ -481,6 +487,7 @@ fn verify_partial_sigs(
     aggregated_pubkey: Point,
     blinding_factors: &Vec<(Scalar, Scalar)>,
     sign_nonce: MaybePoint,
+    b: MaybeScalar,
     e: MaybeScalar,
     partial_signatures: &Vec<MaybeScalar>,
 ) {
@@ -508,6 +515,7 @@ fn verify_partial_sigs(
             nonce_parity,
             their_pubkey,
             &their_pubnonce,
+            b,
             ep,
         )
         .expect("received invalid signature from a peer");
@@ -520,6 +528,7 @@ async fn request_partial_sigs(
     aggregated_pubkey: Point,
     blinding_factors: &Vec<(Scalar, Scalar)>,
     sign_nonce: MaybePoint,
+    b: MaybeScalar,
     e: MaybeScalar,
 ) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
     let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
@@ -547,6 +556,7 @@ async fn request_partial_sigs(
             session_id: id.clone(),
             challenge_parity: challenge_parity.unwrap_u8(),
             nonce_parity: nonce_parity.unwrap_u8(),
+            b: b.encode_hex(), // TODO: blind it?
             key_coeff: key_coeff.encode_hex(),
             e: hex::encode(ep),
         };
@@ -556,12 +566,13 @@ async fn request_partial_sigs(
             .post(url)
             .json(&body)
             .send()
-            .await?
-            .json::<SignResp>()
             .await?;
         println!("{resp:#?}");
+        let j = resp.json::<SignResp>()
+            .await?;
+        println!("{j:#?}");
 
-        let p = PartialSignature::from_hex(&resp.sig).unwrap();
+        let p = PartialSignature::from_hex(&j.sig).unwrap();
         partial_signatures.push(p);
     }
     Ok(partial_signatures)
