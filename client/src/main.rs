@@ -110,11 +110,11 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let blinding_factors = gen_blinding_factors(num_signers);
 
-    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b)| *a).sum();
+    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b, g)| *a).sum();
     let bbs: MaybePoint = blinding_factors
         .iter()
         .enumerate()
-        .map(|(i, (a, b))| {
+        .map(|(i, (a, b, g))| {
             let pubkey: Point = pubkeys[i].into();
             let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
             let bc = *b * c;
@@ -122,9 +122,19 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         })
         .sum();
 
+    let ggs: MaybePoint = blinding_factors
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b, g))| {
+            let nonce = public_nonces[i].clone();
+            *g * nonce.R2
+        })
+        .sum();
+
+
     let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
-    let sign_nonce = agg_nonce + aas * G + bbs;
+    let sign_nonce = agg_nonce + ggs + aas * G + bbs;
 
     let adaptor_point = MaybePoint::Infinity;
     let adapted_nonce = sign_nonce + adaptor_point;
@@ -312,11 +322,11 @@ async fn sign_psbt(
 
     let blinding_factors = gen_blinding_factors(num_signers);
 
-    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b)| *a).sum();
+    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b, g)| *a).sum();
     let bbs: MaybePoint = blinding_factors
         .iter()
         .enumerate()
-        .map(|(i, (a, b))| {
+        .map(|(i, (a, b, g))| {
             let pubkey: Point = pubkeys[i].into();
             let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
             let bc = *b * c;
@@ -324,9 +334,19 @@ async fn sign_psbt(
         })
         .sum();
 
+    let ggs: MaybePoint = blinding_factors
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b, g))| {
+            let nonce = public_nonces[i].clone();
+            *g * nonce.R2
+        })
+        .sum();
+
+
     let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
-    let sign_nonce = agg_nonce + aas * G + bbs;
+    let sign_nonce = agg_nonce + ggs + aas * G + bbs;
 
     let adaptor_point = MaybePoint::Infinity;
     let adapted_nonce = sign_nonce + adaptor_point;
@@ -463,7 +483,7 @@ fn aggregate_partial_sigs(
 }
 
 fn unblind_partial_sigs(
-    blinding_factors: Vec<(Scalar, Scalar)>,
+    blinding_factors: Vec<(Scalar, Scalar, Scalar)>,
     sign_nonce: MaybePoint,
     partial_signatures: Vec<MaybeScalar>,
 ) -> Vec<PartialSignature> {
@@ -485,7 +505,7 @@ fn verify_partial_sigs(
     public_nonces: &Vec<PubNonce>,
     key_agg_ctx: &KeyAggContext,
     aggregated_pubkey: Point,
-    blinding_factors: &Vec<(Scalar, Scalar)>,
+    blinding_factors: &Vec<(Scalar, Scalar, Scalar)>,
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
@@ -508,6 +528,8 @@ fn verify_partial_sigs(
             e + blinding_factors[i].1
         };
 
+        let bp = b + blinding_factors[i].2;
+
         verify_partial_challenge(
             key_agg_ctx.key_coefficient(their_pubkey).unwrap(),
             challenge_parity,
@@ -515,7 +537,7 @@ fn verify_partial_sigs(
             nonce_parity,
             their_pubkey,
             &their_pubnonce,
-            b,
+            bp,
             ep,
         )
         .expect("received invalid signature from a peer");
@@ -526,7 +548,7 @@ async fn request_partial_sigs(
     sessions: Vec<SigningSession>,
     key_agg_ctx: &KeyAggContext,
     aggregated_pubkey: Point,
-    blinding_factors: &Vec<(Scalar, Scalar)>,
+    blinding_factors: &Vec<(Scalar, Scalar, Scalar)>,
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
@@ -546,17 +568,21 @@ async fn request_partial_sigs(
             e + blinding_factors[i].1
         };
 
+        let bp = b + blinding_factors[i].2;
+
         let signer = session.signer.clone();
         let id = session.session_id.clone();
         let client = reqwest::Client::new();
         let url = format!("http://{signer}/sign/{id}");
         println!("url: {}", url);
 
+        // TODO: must prove that all these values are generated correctly
+        // TODO: blind b, parity?, key_coeff?
         let body = SignReq {
             session_id: id.clone(),
             challenge_parity: challenge_parity.unwrap_u8(),
             nonce_parity: nonce_parity.unwrap_u8(),
-            b: b.encode_hex(), // TODO: blind it?
+            b: bp.encode_hex(),
             key_coeff: key_coeff.encode_hex(),
             e: hex::encode(ep),
         };
@@ -578,7 +604,7 @@ async fn request_partial_sigs(
     Ok(partial_signatures)
 }
 
-fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar)> {
+fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar, Scalar)> {
     let blinding_seed = rand::thread_rng().random::<[u8; 32]>();
     let mut blinding_factors = vec![];
     for i in 0..num_signers {
@@ -588,7 +614,6 @@ fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar)> {
             .chain_update(&(0 as u32).to_be_bytes())
             .finalize()
             .into();
-
         let k0 = Scalar::from_slice(&blind_hash0).unwrap();
 
         let blind_hash1: [u8; 32] = Sha256::new()
@@ -597,9 +622,18 @@ fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar)> {
             .chain_update(&(1 as u32).to_be_bytes())
             .finalize()
             .into();
-
         let k1 = Scalar::from_slice(&blind_hash1).unwrap();
-        blinding_factors.push((k0, k1));
+
+        let blind_hash2: [u8; 32] = Sha256::new()
+            .chain_update(blinding_seed)
+            .chain_update(&(i as u32).to_be_bytes())
+            .chain_update(&(2 as u32).to_be_bytes())
+            .finalize()
+            .into();
+
+        let k2 = Scalar::from_slice(&blind_hash2).unwrap();
+
+        blinding_factors.push((k0, k1, k2));
     }
     blinding_factors
 }
