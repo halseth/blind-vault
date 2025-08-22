@@ -101,14 +101,18 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
     println!("num signers: {}", num_signers);
+    let (blinding_factors , coeff_salt) = gen_blinding_factors(num_signers);
 
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) = aggregate_pubs(&sessions);
+    let (
+        pubkeys,
+        public_nonces,
+        key_agg_ctx,
+        aggregated_nonce,
+    ) = aggregate_pubs(&sessions, Some(&coeff_salt));
 
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
     let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
-
-    let blinding_factors = gen_blinding_factors(num_signers);
 
     let aas: MaybeScalar = blinding_factors.iter().map(|(a, b, g)| *a).sum();
     let bbs: MaybePoint = blinding_factors
@@ -130,7 +134,6 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
             *g * nonce.R2
         })
         .sum();
-
 
     let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
@@ -236,7 +239,14 @@ async fn sign_psbt(
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
 
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) = aggregate_pubs(&sessions);
+    let (blinding_factors , coeff_salt) = gen_blinding_factors(num_signers);
+
+    let (
+        pubkeys,
+        public_nonces,
+        key_agg_ctx,
+        aggregated_nonce,
+    ) = aggregate_pubs(&sessions, Some(&coeff_salt));
 
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
@@ -320,7 +330,6 @@ async fn sign_psbt(
     println!("msg: {:?}", msg);
     println!("sighash_type: {:?}", sighash_type);
 
-    let blinding_factors = gen_blinding_factors(num_signers);
 
     let aas: MaybeScalar = blinding_factors.iter().map(|(a, b, g)| *a).sum();
     let bbs: MaybePoint = blinding_factors
@@ -604,7 +613,7 @@ async fn request_partial_sigs(
     Ok(partial_signatures)
 }
 
-fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar, Scalar)> {
+fn gen_blinding_factors(num_signers: usize) -> (Vec<(Scalar, Scalar, Scalar)>, [u8; 32]) {
     let blinding_seed = rand::thread_rng().random::<[u8; 32]>();
     let mut blinding_factors = vec![];
     for i in 0..num_signers {
@@ -635,11 +644,20 @@ fn gen_blinding_factors(num_signers: usize) -> Vec<(Scalar, Scalar, Scalar)> {
 
         blinding_factors.push((k0, k1, k2));
     }
-    blinding_factors
+
+    let coeff_salt: [u8; 32] = Sha256::new()
+        .chain_update(blinding_seed)
+        .chain_update(&(num_signers as u32).to_be_bytes())
+        .chain_update(&(3 as u32).to_be_bytes())
+        .finalize()
+        .into();
+
+    (blinding_factors, coeff_salt)
 }
 
 fn aggregate_pubs(
     sessions: &Vec<SigningSession>,
+    key_coeff_salt: Option<&[u8]>,
 ) -> (Vec<PublicKey>, Vec<PubNonce>, KeyAggContext, AggNonce) {
     let (pubkeys, public_nonces): (Vec<PublicKey>, Vec<PubNonce>) = sessions
         .iter()
@@ -652,7 +670,7 @@ fn aggregate_pubs(
         })
         .collect();
 
-    let mut key_agg_ctx = KeyAggContext::new(pubkeys.clone()).unwrap();
+    let mut key_agg_ctx = KeyAggContext::new(pubkeys.clone(), key_coeff_salt).unwrap();
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
     key_agg_ctx = key_agg_ctx.with_unspendable_taproot_tweak().unwrap();

@@ -1365,7 +1365,6 @@ dependencies = [
 [[package]]
 name = "musig2"
 version = "0.2.4"
-source = "git+https://github.com/halseth/musig2.git?rev=160f7a5#160f7a58da44938b51f0cd080a2729c2edb161b7"
 dependencies = [
  "base16ct",
  "hex",
