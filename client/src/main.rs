@@ -537,7 +537,6 @@ fn verify_partial_sigs(
         let bp = b + blinding_factors[i].gamma;
 
         verify_partial_challenge(
-            key_agg_ctx.key_coefficient(their_pubkey).unwrap(),
             challenge_parity,
             partial_signature,
             nonce_parity,

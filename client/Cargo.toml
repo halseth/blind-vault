@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 shared = {path = "../shared"}
-musig2 = { git = "https://github.com/halseth/musig2.git", rev = "9ea9e9e", features = ["rand"]}
+musig2 = { git = "https://github.com/halseth/musig2.git", rev = "47fe67f", features = ["rand"]}
 #musig2 = {path = "../../musig2", features = ["rand"]}
 sha2 = "0.10.8"
 reqwest = { version = "0.12", features = ["json"] }

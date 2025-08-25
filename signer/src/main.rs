@@ -118,8 +118,6 @@ async fn session_sign(
     let seckey = session.secret_key;
     let secnonce = session.secret_nonce;
 
-    let key_coeff = Scalar::one();
-
     let b = match MaybeScalar::from_hex(&req.b) {
         Ok(b) => b,
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
@@ -132,7 +130,6 @@ async fn session_sign(
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         b,
-        key_coeff.into(),
         req.challenge_parity.into(),
         seckey,
         secnonce,
