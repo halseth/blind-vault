@@ -120,9 +120,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
         .map(|(i, fac)| {
             let pubkey: Point = pubkeys[i].into();
-            let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
-            let bc = fac.beta * c;
-            bc * pubkey
+            fac.beta * pubkey
         })
         .sum();
 
@@ -337,9 +335,7 @@ async fn sign_psbt(
         .enumerate()
         .map(|(i, fac)| {
             let pubkey: Point = pubkeys[i].into();
-            let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
-            let bc = fac.beta * c;
-            bc * pubkey
+            fac.beta * pubkey
         })
         .sum();
 
@@ -531,10 +527,11 @@ fn verify_partial_sigs(
 
         let even_parity = bool::from(!challenge_parity);
 
+       let key_coeff = key_agg_ctx.key_coefficient(their_pubkey).unwrap();
         let ep = if sign_nonce.has_even_y() ^ even_parity {
-            e - blinding_factors[i].beta
+            key_coeff * e - blinding_factors[i].beta
         } else {
-            e + blinding_factors[i].beta
+            key_coeff * e + blinding_factors[i].beta
         };
 
         let bp = b + blinding_factors[i].gamma;
@@ -572,9 +569,9 @@ async fn request_partial_sigs(
 
         let even_parity = bool::from(!challenge_parity);
         let ep = if sign_nonce.has_even_y() ^ even_parity {
-            e - blinding_factors[i].beta
+            key_coeff * e - blinding_factors[i].beta
         } else {
-            e + blinding_factors[i].beta
+            key_coeff * e + blinding_factors[i].beta
         };
 
         let bp = b + blinding_factors[i].gamma;
@@ -592,7 +589,6 @@ async fn request_partial_sigs(
             challenge_parity: challenge_parity.unwrap_u8(),
             nonce_parity: nonce_parity.unwrap_u8(),
             b: bp.encode_hex(),
-            key_coeff: key_coeff.encode_hex(),
             e: hex::encode(ep),
         };
         let body_json = serde_json::to_string(&body).unwrap();

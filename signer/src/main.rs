@@ -4,7 +4,7 @@ use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
 use hex::ToHex;
 use musig2::SecNonce;
-use musig2::secp::MaybeScalar;
+use musig2::secp::{MaybeScalar, Scalar};
 use secp256k1::{Secp256k1, SecretKey, rand};
 use serde::Serialize;
 use sha2::Digest;
@@ -117,12 +117,9 @@ async fn session_sign(
 
     let seckey = session.secret_key;
     let secnonce = session.secret_nonce;
-    
 
-    let key_coeff = match MaybeScalar::from_hex(&req.key_coeff) {
-        Ok(k) => k,
-        Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
-    };
+    let key_coeff = Scalar::one();
+
     let b = match MaybeScalar::from_hex(&req.b) {
         Ok(b) => b,
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
@@ -135,7 +132,7 @@ async fn session_sign(
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         b,
-        key_coeff,
+        key_coeff.into(),
         req.challenge_parity.into(),
         seckey,
         secnonce,

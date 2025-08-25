@@ -13,7 +13,6 @@ pub struct SignReq {
     pub session_id: String,
     pub challenge_parity: u8,
     pub nonce_parity: u8,
-    pub key_coeff: String,
     pub b: String,
     pub e: String,
 }
