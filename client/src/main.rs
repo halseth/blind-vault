@@ -557,6 +557,7 @@ async fn request_partial_sigs(
     sessions: Vec<SigningSession>,
     key_agg_ctx: &KeyAggContext,
     aggregated_pubkey: Point,
+    blinding_factors: &Vec<BlindingFactors>,
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
