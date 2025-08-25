@@ -114,14 +114,14 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
     let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
 
-    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b, g)| *a).sum();
+    let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
     let bbs: MaybePoint = blinding_factors
         .iter()
         .enumerate()
-        .map(|(i, (a, b, g))| {
+        .map(|(i, fac)| {
             let pubkey: Point = pubkeys[i].into();
             let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
-            let bc = *b * c;
+            let bc = fac.beta * c;
             bc * pubkey
         })
         .sum();
@@ -129,9 +129,9 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let ggs: MaybePoint = blinding_factors
         .iter()
         .enumerate()
-        .map(|(i, (a, b, g))| {
+        .map(|(i, fac)| {
             let nonce = public_nonces[i].clone();
-            *g * nonce.R2
+            fac.gamma * nonce.R2
         })
         .sum();
 
@@ -331,14 +331,14 @@ async fn sign_psbt(
     println!("sighash_type: {:?}", sighash_type);
 
 
-    let aas: MaybeScalar = blinding_factors.iter().map(|(a, b, g)| *a).sum();
+    let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
     let bbs: MaybePoint = blinding_factors
         .iter()
         .enumerate()
-        .map(|(i, (a, b, g))| {
+        .map(|(i, fac)| {
             let pubkey: Point = pubkeys[i].into();
             let c = key_agg_ctx.key_coefficient(pubkey).unwrap();
-            let bc = *b * c;
+            let bc = fac.beta * c;
             bc * pubkey
         })
         .sum();
@@ -346,9 +346,9 @@ async fn sign_psbt(
     let ggs: MaybePoint = blinding_factors
         .iter()
         .enumerate()
-        .map(|(i, (a, b, g))| {
+        .map(|(i, fac)| {
             let nonce = public_nonces[i].clone();
-            *g * nonce.R2
+            fac.gamma * nonce.R2
         })
         .sum();
 
@@ -492,7 +492,7 @@ fn aggregate_partial_sigs(
 }
 
 fn unblind_partial_sigs(
-    blinding_factors: Vec<(Scalar, Scalar, Scalar)>,
+    blinding_factors: Vec<BlindingFactors>,
     sign_nonce: MaybePoint,
     partial_signatures: Vec<MaybeScalar>,
 ) -> Vec<PartialSignature> {
@@ -501,9 +501,9 @@ fn unblind_partial_sigs(
         .enumerate()
         .map(|(i, s)| {
             if sign_nonce.has_even_y() {
-                *s + blinding_factors[i].0
+                *s + blinding_factors[i].alpha
             } else {
-                *s - blinding_factors[i].0
+                *s - blinding_factors[i].alpha
             }
         })
         .collect();
@@ -514,7 +514,7 @@ fn verify_partial_sigs(
     public_nonces: &Vec<PubNonce>,
     key_agg_ctx: &KeyAggContext,
     aggregated_pubkey: Point,
-    blinding_factors: &Vec<(Scalar, Scalar, Scalar)>,
+    blinding_factors: &Vec<BlindingFactors>,
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
@@ -532,12 +532,12 @@ fn verify_partial_sigs(
         let even_parity = bool::from(!challenge_parity);
 
         let ep = if sign_nonce.has_even_y() ^ even_parity {
-            e - blinding_factors[i].1
+            e - blinding_factors[i].beta
         } else {
-            e + blinding_factors[i].1
+            e + blinding_factors[i].beta
         };
 
-        let bp = b + blinding_factors[i].2;
+        let bp = b + blinding_factors[i].gamma;
 
         verify_partial_challenge(
             key_agg_ctx.key_coefficient(their_pubkey).unwrap(),
@@ -557,7 +557,6 @@ async fn request_partial_sigs(
     sessions: Vec<SigningSession>,
     key_agg_ctx: &KeyAggContext,
     aggregated_pubkey: Point,
-    blinding_factors: &Vec<(Scalar, Scalar, Scalar)>,
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
@@ -572,12 +571,12 @@ async fn request_partial_sigs(
 
         let even_parity = bool::from(!challenge_parity);
         let ep = if sign_nonce.has_even_y() ^ even_parity {
-            e - blinding_factors[i].1
+            e - blinding_factors[i].beta
         } else {
-            e + blinding_factors[i].1
+            e + blinding_factors[i].beta
         };
 
-        let bp = b + blinding_factors[i].2;
+        let bp = b + blinding_factors[i].gamma;
 
         let signer = session.signer.clone();
         let id = session.session_id.clone();
@@ -613,7 +612,13 @@ async fn request_partial_sigs(
     Ok(partial_signatures)
 }
 
-fn gen_blinding_factors(num_signers: usize) -> (Vec<(Scalar, Scalar, Scalar)>, [u8; 32]) {
+struct BlindingFactors {
+    alpha: Scalar,
+    beta: Scalar,
+    gamma: Scalar,
+}
+
+fn gen_blinding_factors(num_signers: usize) -> (Vec<BlindingFactors>, [u8; 32]) {
     let blinding_seed = rand::thread_rng().random::<[u8; 32]>();
     let mut blinding_factors = vec![];
     for i in 0..num_signers {
@@ -642,7 +647,7 @@ fn gen_blinding_factors(num_signers: usize) -> (Vec<(Scalar, Scalar, Scalar)>, [
 
         let k2 = Scalar::from_slice(&blind_hash2).unwrap();
 
-        blinding_factors.push((k0, k1, k2));
+        blinding_factors.push(BlindingFactors{ alpha: k0, beta: k1, gamma: k2 });
     }
 
     let coeff_salt: [u8; 32] = Sha256::new()
