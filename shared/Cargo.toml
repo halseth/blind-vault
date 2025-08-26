@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0.219", features = ["derive"] }
 #bitcoin = { version = "0.32.5", features = ["std", "rand-std", "serde"] }
-bitcoin = { path = "../../rust-bitcoin/bitcoin", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }
+#bitcoin = { path = "../../rust-bitcoin/bitcoin", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }
+bitcoin = { git = "https://github.com/halseth/rust-bitcoin.git", rev = "da1d657", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }

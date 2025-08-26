@@ -316,6 +316,7 @@ checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 [[package]]
 name = "base58ck"
 version = "0.2.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "bitcoin-internals",
  "bitcoin_hashes 0.16.0",
@@ -336,6 +337,7 @@ checksum = "d965446196e3b7decd44aa7ee49e31d630118f90ef12f97900f262eb915c951d"
 [[package]]
 name = "bitcoin"
 version = "0.33.0-alpha.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "base58ck",
  "bech32",
@@ -353,6 +355,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-internals"
 version = "0.4.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "hex-conservative 0.3.0",
  "serde",
@@ -367,6 +370,7 @@ checksum = "0b47c4ab7a93edb0c7198c5535ed9b52b63095f4e9b45279c6736cec4b856baf"
 [[package]]
 name = "bitcoin-io"
 version = "0.2.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "bitcoin-internals",
  "bitcoin_hashes 0.16.0",
@@ -375,6 +379,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-primitives"
 version = "0.101.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "bitcoin-internals",
  "bitcoin-units",
@@ -386,6 +391,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-units"
 version = "0.2.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "bitcoin-internals",
  "serde",
@@ -404,6 +410,7 @@ dependencies = [
 [[package]]
 name = "bitcoin_hashes"
 version = "0.16.0"
+source = "git+https://github.com/halseth/rust-bitcoin.git?rev=da1d657#da1d657b06edfd8d6c1d0d7d684945dc5ed30a3a"
 dependencies = [
  "bitcoin-internals",
  "hex-conservative 0.3.0",

@@ -9,7 +9,8 @@ musig2 = { git = "https://github.com/halseth/musig2.git", rev = "47fe67f", featu
 #musig2 = {path = "../../musig2", features = ["rand"]}
 sha2 = "0.10.8"
 reqwest = { version = "0.12", features = ["json"] }
-bitcoin = { path = "../../rust-bitcoin/bitcoin", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }
+#bitcoin = { path = "../../rust-bitcoin/bitcoin", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }
+bitcoin = { git = "https://github.com/halseth/rust-bitcoin.git", rev = "da1d657", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }
 #bitcoin = { version = "0.32.5", features = ["std", "rand-std", "serde"] }
 secp256k1 = { version = "0.30.0", features = ["rand"] }
 tokio = { version = "1", features = ["full"] }
