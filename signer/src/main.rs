@@ -11,7 +11,9 @@ use sha2::Digest;
 use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::io::Write;
 use std::net::SocketAddr;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 // This struct represents state
@@ -47,6 +49,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
+            .app_data(web::JsonConfig::default().limit(256 * 1024 * 1024))
             .service(session_init)
             .service(session_sign)
     })
@@ -106,7 +109,7 @@ async fn session_sign(
     id: web::Path<String>,
     req: web::Json<SignReq>,
 ) -> Result<impl Responder> {
-    println!("req: {:?}", req);
+    //println!("req: {:?}", req);
     let session_id = id.to_string();
 
     // Delete all data about this session, ensuring we will never sign twice with same key.
@@ -127,6 +130,29 @@ async fn session_sign(
         Ok(e) => e,
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
     };
+
+    println!("zk_proof: {}",  req.zk_proof.len());
+
+    let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
+        //.env("RISC0_DEV_MODE", "true")
+        .arg(format!("--verify=true"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child.stdin.as_mut().unwrap().write_all(req.zk_proof.as_bytes())?;
+
+    let output = child.wait_with_output()?;
+
+    if !output.status.success() {
+        println!("zk_proof failed: {}", String::from_utf8_lossy(&output.stderr));
+        return Err(ErrorInternalServerError("zk_proof failed"));
+    }
+
+
+    let proof = String::from_utf8(output.stdout).unwrap();
+    //let proof = proof.strip_suffix("\n").unwrap();
+    println!("output: {}", proof);
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         b,

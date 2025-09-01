@@ -15,6 +15,7 @@ pub struct SignReq {
     pub nonce_parity: u8,
     pub b: String,
     pub e: String,
+    pub zk_proof: String,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SignResp {
