@@ -3,6 +3,7 @@ use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::KnownHrp::Mainnet;
 use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
+use bitcoin::hex::DisplayHex;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::sighash::SighashCache;
@@ -23,7 +24,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp};
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
+use std::fs::File;
 use std::net::SocketAddr;
+use std::process::Command;
+use std::ptr::write;
 use std::str::FromStr;
 use std::sync::Mutex;
 
@@ -61,6 +66,16 @@ struct SessionData {
     init_resp: InitResp,
     secret_key: SecretKey,
     secret_nonce: SecNonce,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+struct Params {
+    pub coeff_salt: String,
+    pub blinding_factors: Vec<(String, String, String)>,
+    pub pubkeys: Vec<String>,
+    pub pubnonces: Vec<String>,
+    pub message: String,
+    pub signer_index: usize,
 }
 
 #[actix_web::main]
@@ -101,14 +116,10 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
     println!("num signers: {}", num_signers);
-    let (blinding_factors , coeff_salt) = gen_blinding_factors(num_signers);
+    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
 
-    let (
-        pubkeys,
-        public_nonces,
-        key_agg_ctx,
-        aggregated_nonce,
-    ) = aggregate_pubs(&sessions, Some(&coeff_salt));
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(&coeff_salt));
 
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
@@ -152,6 +163,10 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         sign_nonce,
         b,
         e,
+        message.to_string(),
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
     )
     .await?;
 
@@ -166,7 +181,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         &partial_signatures,
     );
 
-    let unblinded_sigs = unblind_partial_sigs(blinding_factors, sign_nonce, partial_signatures);
+    let unblinded_sigs = unblind_partial_sigs(&blinding_factors, sign_nonce, partial_signatures);
 
     let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
 
@@ -237,14 +252,10 @@ async fn sign_psbt(
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
 
-    let (blinding_factors , coeff_salt) = gen_blinding_factors(num_signers);
+    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
 
-    let (
-        pubkeys,
-        public_nonces,
-        key_agg_ctx,
-        aggregated_nonce,
-    ) = aggregate_pubs(&sessions, Some(&coeff_salt));
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(&coeff_salt));
 
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
@@ -328,7 +339,6 @@ async fn sign_psbt(
     println!("msg: {:?}", msg);
     println!("sighash_type: {:?}", sighash_type);
 
-
     let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
     let bbs: MaybePoint = blinding_factors
         .iter()
@@ -347,7 +357,6 @@ async fn sign_psbt(
             fac.gamma * nonce.R2
         })
         .sum();
-
 
     let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
     let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
@@ -368,6 +377,10 @@ async fn sign_psbt(
         sign_nonce,
         b,
         e,
+        hex::encode(message),
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
     )
     .await?;
 
@@ -382,7 +395,7 @@ async fn sign_psbt(
         &partial_signatures,
     );
 
-    let unblinded_sigs = unblind_partial_sigs(blinding_factors, sign_nonce, partial_signatures);
+    let unblinded_sigs = unblind_partial_sigs(&blinding_factors, sign_nonce, partial_signatures);
 
     let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
 
@@ -488,7 +501,7 @@ fn aggregate_partial_sigs(
 }
 
 fn unblind_partial_sigs(
-    blinding_factors: Vec<BlindingFactors>,
+    blinding_factors: &Vec<BlindingFactors>,
     sign_nonce: MaybePoint,
     partial_signatures: Vec<MaybeScalar>,
 ) -> Vec<PartialSignature> {
@@ -527,7 +540,7 @@ fn verify_partial_sigs(
 
         let even_parity = bool::from(!challenge_parity);
 
-       let key_coeff = key_agg_ctx.key_coefficient(their_pubkey).unwrap();
+        let key_coeff = key_agg_ctx.key_coefficient(their_pubkey).unwrap();
         let ep = if sign_nonce.has_even_y() ^ even_parity {
             key_coeff * e - blinding_factors[i].beta
         } else {
@@ -557,6 +570,10 @@ async fn request_partial_sigs(
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
+    message: String,
+    pubkeys: &Vec<PublicKey>,
+    public_nonces: &Vec<PubNonce>,
+    coeff_salt: &[u8; 32],
 ) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
     let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
     let nonce_parity = sign_nonce.parity();
@@ -581,6 +598,39 @@ async fn request_partial_sigs(
         let url = format!("http://{signer}/sign/{id}");
         println!("url: {}", url);
 
+        let zk_params = Params {
+            coeff_salt: hex::encode(coeff_salt),
+            blinding_factors: blinding_factors
+                .iter()
+                .map(|fac| {
+                    (
+                        hex::encode(fac.alpha),
+                        hex::encode(fac.beta),
+                        hex::encode(fac.gamma),
+                    )
+                })
+                .collect(),
+            pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
+            pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
+            message: message.clone(),
+            signer_index: i,
+        };
+
+        println!("params: {}", serde_json::to_string(&zk_params).unwrap());
+
+        let output = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
+            //.env("RISC0_DEV_MODE", "true")
+            .arg(format!("--prove={}", serde_json::to_string(&zk_params).unwrap()))
+            .output()?;
+
+        let proof = String::from_utf8(output.stdout).unwrap();
+        let proof = proof.strip_suffix("\n").unwrap();
+        //println!("output: {}", proof);
+        fs::write("receipt.txt", proof).expect("Should be able to write to `/foo/tmp`");
+
+        //let proof =
+        //    fs::read_to_string("receipt.txt").expect("Should be able to read from `/foo/tmp`");
+
         // TODO: must prove that all these values are generated correctly
         // TODO: blind b, parity?, key_coeff?
         let body = SignReq {
@@ -589,17 +639,13 @@ async fn request_partial_sigs(
             nonce_parity: nonce_parity.unwrap_u8(),
             b: bp.encode_hex(),
             e: hex::encode(ep),
+            zk_proof: proof.to_string(),
         };
         let body_json = serde_json::to_string(&body).unwrap();
-        println!("body_json: {}", body_json);
-        let resp = client
-            .post(url)
-            .json(&body)
-            .send()
-            .await?;
+        // println!("body_json: {}", body_json);
+        let resp = client.post(url).json(&body).send().await?;
         println!("{resp:#?}");
-        let j = resp.json::<SignResp>()
-            .await?;
+        let j = resp.json::<SignResp>().await?;
         println!("{j:#?}");
 
         let p = PartialSignature::from_hex(&j.sig).unwrap();
@@ -643,7 +689,11 @@ fn gen_blinding_factors(num_signers: usize) -> (Vec<BlindingFactors>, [u8; 32]) 
 
         let k2 = Scalar::from_slice(&blind_hash2).unwrap();
 
-        blinding_factors.push(BlindingFactors{ alpha: k0, beta: k1, gamma: k2 });
+        blinding_factors.push(BlindingFactors {
+            alpha: k0,
+            beta: k1,
+            gamma: k2,
+        });
     }
 
     let coeff_salt: [u8; 32] = Sha256::new()
