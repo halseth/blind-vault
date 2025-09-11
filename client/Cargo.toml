@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 shared = {path = "../shared"}
-musig2 = { git = "https://github.com/halseth/musig2.git", rev = "47fe67f", features = ["rand"]}
+musig2 = { git = "https://github.com/halseth/musig2.git", rev = "47fe67f", features = ["rand", "k256"]}
 #musig2 = {path = "../../musig2", features = ["rand"]}
 sha2 = "0.10.8"
 reqwest = { version = "0.12", features = ["json"] }
@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0.219", features = ["derive"] }
 clap = { version = "4.5.32", features = ["derive"] }
 serde_json = "1.0.140"
+k256 = { version = "=0.13.4", features = ["arithmetic", "serde", "expose-field", "std", "ecdsa", "pkcs8", "schnorr"], default-features = false }
 hex = "0.4.3"
 rand = "0.9.0"
 actix-web = "4.10.2"

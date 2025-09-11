@@ -3,7 +3,6 @@ use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::KnownHrp::Mainnet;
 use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
-use bitcoin::hex::DisplayHex;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::sighash::SighashCache;
@@ -13,13 +12,12 @@ use bitcoin::{
 };
 use clap::Parser;
 use hex::ToHex;
-use musig2::secp::{G, MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
     AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce, compute_challenge_hash_tweak,
     verify_partial_challenge,
 };
 use rand::Rng;
-use secp256k1::{PublicKey, SecretKey, schnorr};
+use k256::{PublicKey, SecretKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp};
@@ -31,6 +29,7 @@ use std::process::Command;
 use std::ptr::write;
 use std::str::FromStr;
 use std::sync::Mutex;
+
 
 #[derive(Debug, Parser)]
 #[command(verbatim_doc_comment)]
@@ -187,6 +186,26 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
         .expect("aggregated signature must be valid");
+
+    let zk_params = Params {
+        coeff_salt: hex::encode(coeff_salt),
+        blinding_factors: blinding_factors
+            .iter()
+            .map(|fac| {
+                (
+                    hex::encode(fac.alpha),
+                    hex::encode(fac.beta),
+                    hex::encode(fac.gamma),
+                )
+            })
+            .collect(),
+        pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
+        pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
+        message: message.to_string(),
+        signer_index: 0,
+    };
+
+    println!("params: {}", serde_json::to_string(&zk_params).unwrap());
 
     Ok(())
 }
@@ -641,6 +660,8 @@ async fn request_partial_sigs(
             e: hex::encode(ep),
             zk_proof: proof.to_string(),
         };
+        // TODO: attach ZK proof that these values are createed accoring to the protocol
+
         let body_json = serde_json::to_string(&body).unwrap();
         // println!("body_json: {}", body_json);
         let resp = client.post(url).json(&body).send().await?;
@@ -714,8 +735,8 @@ fn aggregate_pubs(
         .iter()
         .map(|session| {
             let resp = session.init_resp.clone();
-            let pk = PublicKey::from_str(resp.pubkey.as_str()).unwrap();
-            println!("pk: {}", pk);
+            let pk =  parse_pubkey(resp.pubkey.as_str());
+            //println!("pk: {}", pk);
             let pn = PubNonce::from_hex(resp.pubnonce.as_str()).unwrap();
             (pk, pn)
         })
@@ -731,4 +752,13 @@ fn aggregate_pubs(
     // We manually aggregate the nonces together and then construct our partial signature.
     let aggregated_nonce: AggNonce = public_nonces.iter().sum();
     (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce)
+}
+
+fn parse_pubkey(pub_str: &str) -> PublicKey {
+    let pk_bytes = hex::decode(pub_str).unwrap();
+    let pk = PublicKey::from_sec1_bytes(&pk_bytes).unwrap();
+
+    println!("sec1 pub: {}", hex::encode(pk_bytes));
+
+    pk
 }
