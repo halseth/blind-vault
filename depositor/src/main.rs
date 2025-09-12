@@ -16,7 +16,7 @@ use bitcoin::{
     Address, Amount, Network, OutPoint, PrivateKey, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Witness, consensus, transaction,
 };
-use shared::{SignPsbtReq, SignPsbtResp};
+use shared::{SignPsbtReq, SignPsbtResp, VaultDepositReq, VaultDepositResp};
 
 fn parse_address(addr: &str, network: Network) -> Address {
     Address::from_str(addr)
@@ -41,6 +41,9 @@ struct Args {
 
     #[arg(long)]
     fallback_addr: String,
+
+    #[arg(long)]
+    recovery_addr: String,
 
     #[arg(long)]
     output_amt: Amount,
@@ -159,14 +162,20 @@ async fn main() {
     // and add inputs and outputs to the PSBT.
     let psbt = Psbt::from_unsigned_tx(unsigned_tx).expect("Could not create PSBT");
 
-    let resp = initiate_sign(args.client_url.unwrap(), &psbt, fallback_addr.to_string())
+    // Use the new vault deposit flow
+    let resp = initiate_vault_deposit(args.client_url.unwrap(), &psbt, args.recovery_addr.clone())
         .await
         .unwrap();
-    let presigned_tx = resp.spend_psbt.extract_tx().expect("valid tx");
+    
+    println!("Vault deposit response: {:?}", resp);
+    println!("Vault pubkey: {}", resp.vault_pubkey);
+    
+    // Extract the pre-signed recovery transaction
+    let recovery_tx = resp.recovery_psbt.extract_tx().expect("valid recovery tx");
     let mut deposit_psbt = resp.deposit_psbt;
-    let serialized_presigned_tx = consensus::encode::serialize_hex(&presigned_tx);
-    println!("Presigned Details: {:#?}", presigned_tx);
-    println!("Raw presigned Transaction: {}", serialized_presigned_tx);
+    let serialized_recovery_tx = consensus::encode::serialize_hex(&recovery_tx);
+    println!("Pre-signed recovery transaction details: {:#?}", recovery_tx);
+    println!("Raw recovery transaction: {}", serialized_recovery_tx);
 
     let mut key_map: HashMap<bitcoin::XOnlyPublicKey, PrivateKey> = HashMap::new();
     let (xpub, _) = keypair.x_only_public_key();
@@ -217,35 +226,35 @@ async fn main() {
         .unwrap();
     println!("Transaction Result: {:#?}", res);
 
-    // TODO: verify presigned tx before signing
-    let res = presigned_tx
+    // TODO: verify recovery tx before signing
+    let res = recovery_tx
         .verify(|op| {
-            println!("fetchin op {}", op);
+            println!("fetching op {}", op);
             Some(signed_tx.output[0].clone())
         })
         .unwrap();
-    println!("Pre-signed Transaction Result: {:#?}", res);
+    println!("Pre-signed recovery transaction result: {:#?}", res);
 }
 
-async fn initiate_sign(
+async fn initiate_vault_deposit(
     client_addr: SocketAddr,
     psbt: &Psbt,
-    fallback_addr: String,
-) -> Result<SignPsbtResp, reqwest::Error> {
+    recovery_addr: String,
+) -> Result<VaultDepositResp, reqwest::Error> {
     let client = reqwest::Client::new();
-    let url = format!("http://{}/psbt", client_addr);
+    let url = format!("http://{}/vault/deposit", client_addr);
     println!("url: {}", url);
 
     let body_json = serde_json::to_string(&psbt).unwrap();
     println!("body_json: {}", body_json);
-    let body = SignPsbtReq {
-        psbt: psbt.clone(),
-        fallback_addr: fallback_addr,
+    let body = VaultDepositReq {
+        deposit_psbt: psbt.clone(),
+        recovery_addr,
     };
     let resp = client.post(url).json(&body).send().await?;
     println!("{resp:#?}");
 
-    let j = resp.json::<SignPsbtResp>().await?;
+    let j = resp.json::<VaultDepositResp>().await?;
     println!("{j:#?}");
 
     Ok(j)

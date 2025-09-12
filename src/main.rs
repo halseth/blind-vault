@@ -1,11 +1,8 @@
+use musig2::KeyAggContext;
 use musig2::secp::Point;
 use musig2::secp::{G, MaybePoint, MaybeScalar};
 use musig2::{AggNonce, SecNonce, compute_challenge_hash_tweak, verify_partial_challenge};
-use musig2::{
-    PartialSignature, PubNonce,
-    secp::Scalar,
-};
-use musig2::KeyAggContext;
+use musig2::{PartialSignature, PubNonce, secp::Scalar};
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 

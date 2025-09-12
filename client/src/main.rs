@@ -16,11 +16,12 @@ use musig2::{
     AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce, compute_challenge_hash_tweak,
     verify_partial_challenge,
 };
+use musig2::secp::{Point, MaybePoint, MaybeScalar, Scalar, G};
 use rand::Rng;
 use k256::{PublicKey, SecretKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp};
+use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, RecoverySignReq, RecoverySignResp, VaultUnvaultReq, VaultUnvaultResp, UnvaultSignReq, UnvaultSignResp};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::fs::File;
@@ -102,6 +103,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .app_data(app_state.clone())
             .service(sign_psbt)
+            .service(vault_deposit)
+            .service(vault_unvault)
     })
     .bind(bind)?
     .run()
@@ -761,4 +764,231 @@ fn parse_pubkey(pub_str: &str) -> PublicKey {
     println!("sec1 pub: {}", hex::encode(pk_bytes));
 
     pk
+}
+
+#[post("/vault/deposit")]
+async fn vault_deposit(
+    data: web::Data<AppState>,
+    req: web::Json<VaultDepositReq>,
+) -> actix_web::Result<impl Responder> {
+    println!("Vault deposit request: {:?}", req);
+    
+    let cfg = data.cfg.clone();
+    
+    // Initialize signer sessions
+    let sessions = init_signer_sessions(&cfg).await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to initialize signers: {}", e)))?;
+    
+    let num_signers = sessions.len();
+    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
+    
+    // Aggregate public keys and nonces from signers
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(&coeff_salt));
+    
+    // This is the vault public key (aggregated from signers)
+    let vault_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+    println!("Vault public key: {}", vault_pubkey);
+    
+    // Create the deposit transaction output to the vault pubkey
+    let mut deposit_psbt = req.deposit_psbt.clone();
+    
+    // Update the deposit PSBT to use the vault pubkey as the output
+    // This assumes the deposit PSBT has a single output that needs to be updated
+    if let Some(output) = deposit_psbt.unsigned_tx.output.get_mut(0) {
+        // Convert Point to Bitcoin address for P2TR
+        let vault_addr = create_p2tr_address(&vault_pubkey);
+        output.script_pubkey = vault_addr.script_pubkey();
+        println!("Updated deposit output to vault address: {}", vault_addr);
+    }
+    
+    // Create recovery transaction that spends from vault to recovery address
+    let recovery_psbt = create_recovery_transaction(&deposit_psbt, &req.recovery_addr)?;
+    
+    // Request signers to sign the recovery transaction
+    let signed_recovery_psbt = request_recovery_signatures(
+        &sessions,
+        &key_agg_ctx,
+        &blinding_factors,
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
+        recovery_psbt,
+    ).await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to get recovery signatures: {}", e)))?;
+    
+    let response = VaultDepositResp {
+        deposit_psbt,
+        recovery_psbt: signed_recovery_psbt,
+        vault_pubkey: hex::encode(vault_pubkey.serialize_xonly()),
+    };
+    
+    Ok(web::Json(response))
+}
+
+#[post("/vault/unvault")]
+async fn vault_unvault(
+    data: web::Data<AppState>,
+    req: web::Json<VaultUnvaultReq>,
+) -> actix_web::Result<impl Responder> {
+    println!("Vault unvault request: {:?}", req);
+    
+    let cfg = data.cfg.clone();
+    
+    // Initialize fresh signer sessions for unvaulting
+    let sessions = init_signer_sessions(&cfg).await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to initialize signers: {}", e)))?;
+    
+    let num_signers = sessions.len();
+    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
+    
+    // Aggregate public keys and nonces from signers
+    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(&coeff_salt));
+    
+    // This is the unvault public key (fresh aggregated key)
+    let unvault_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+    println!("Unvault public key: {}", unvault_pubkey);
+    
+    // Create unvault transaction (vault -> unvault address with timelock + script fallback)
+    let unvault_psbt = create_unvault_transaction(&req)?;
+    
+    // Create final spend transaction (timelocked spend from unvault to destination)
+    let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt)?;
+    
+    // Request signers to sign both transactions
+    let (signed_unvault_psbt, signed_final_spend_psbt) = request_unvault_signatures(
+        &sessions,
+        &key_agg_ctx,
+        &blinding_factors,
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
+        unvault_psbt,
+        final_spend_psbt,
+    ).await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to get unvault signatures: {}", e)))?;
+    
+    let response = VaultUnvaultResp {
+        unvault_psbt: signed_unvault_psbt,
+        final_spend_psbt: signed_final_spend_psbt,
+        unvault_pubkey: hex::encode(unvault_pubkey.serialize_xonly()),
+    };
+    
+    Ok(web::Json(response))
+}
+
+// Helper function to create P2TR address from a Point
+fn create_p2tr_address(pubkey: &Point) -> Address {
+    use bitcoin::key::TweakedPublicKey;
+    use bitcoin::XOnlyPublicKey;
+    
+    // Convert Point to XOnlyPublicKey
+    let xonly_pubkey = XOnlyPublicKey::from_slice(&pubkey.serialize_xonly())
+        .expect("Valid x-only public key");
+    
+    // Create P2TR address (taproot)
+    Address::p2tr_tweaked(
+        TweakedPublicKey::dangerous_assume_tweaked(xonly_pubkey),
+        Network::Signet
+    )
+}
+
+// Helper function to create recovery transaction
+fn create_recovery_transaction(
+    deposit_psbt: &Psbt, 
+    recovery_addr: &str
+) -> actix_web::Result<Psbt> {
+    // This would create a transaction that spends the deposit output to the recovery address
+    // For now, return a placeholder - this needs proper PSBT construction
+    let mut recovery_psbt = deposit_psbt.clone();
+    
+    // Update to spend to recovery address
+    if let Some(output) = recovery_psbt.unsigned_tx.output.get_mut(0) {
+        let recovery_address = Address::from_str(recovery_addr)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid recovery address: {}", e)))?
+            .require_network(Network::Signet)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Wrong network for recovery address: {}", e)))?;
+        output.script_pubkey = recovery_address.script_pubkey();
+    }
+    
+    Ok(recovery_psbt)
+}
+
+// Helper function to create unvault transaction
+fn create_unvault_transaction(req: &VaultUnvaultReq) -> actix_web::Result<Psbt> {
+    // This would create the unvault transaction with timelock and script fallback
+    // For now, return a placeholder PSBT
+    let tx = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![],
+        output: vec![],
+    };
+    
+    Ok(Psbt::from_unsigned_tx(tx)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
+}
+
+// Helper function to create final spend transaction  
+fn create_final_spend_transaction(
+    req: &VaultUnvaultReq,
+    unvault_psbt: &Psbt
+) -> actix_web::Result<Psbt> {
+    // This would create the timelocked spend transaction
+    // For now, return a placeholder PSBT
+    let tx = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::from_height(req.timelock_blocks).unwrap(),
+        input: vec![],
+        output: vec![],
+    };
+    
+    Ok(Psbt::from_unsigned_tx(tx)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
+}
+
+// Helper function to request recovery signatures from signers
+async fn request_recovery_signatures(
+    sessions: &[SigningSession],
+    key_agg_ctx: &KeyAggContext,
+    blinding_factors: &[BlindingFactors], 
+    pubkeys: &[PublicKey],
+    public_nonces: &[PubNonce],
+    coeff_salt: &[u8],
+    recovery_psbt: Psbt,
+) -> Result<Psbt, Box<dyn std::error::Error>> {
+    // This would implement the blind signing protocol for the recovery transaction
+    // For now, return the unsigned PSBT
+    // In a real implementation, this would:
+    // 1. Generate ZK proof that recovery transaction is valid
+    // 2. Send RecoverySignReq to each signer with the proof
+    // 3. Aggregate the partial signatures
+    // 4. Return the fully signed recovery PSBT
+    
+    println!("Requesting recovery signatures (placeholder implementation)");
+    Ok(recovery_psbt)
+}
+
+// Helper function to request unvault signatures from signers
+async fn request_unvault_signatures(
+    sessions: &[SigningSession],
+    key_agg_ctx: &KeyAggContext,
+    blinding_factors: &[BlindingFactors],
+    pubkeys: &[PublicKey], 
+    public_nonces: &[PubNonce],
+    coeff_salt: &[u8],
+    unvault_psbt: Psbt,
+    final_spend_psbt: Psbt,
+) -> Result<(Psbt, Psbt), Box<dyn std::error::Error>> {
+    // This would implement the blind signing protocol for unvault transactions
+    // For now, return the unsigned PSBTs
+    // In a real implementation, this would:
+    // 1. Generate ZK proofs that both transactions are valid
+    // 2. Send UnvaultSignReq to each signer with the proofs
+    // 3. Aggregate the partial signatures for both transactions
+    // 4. Return the fully signed PSBTs
+    
+    println!("Requesting unvault signatures (placeholder implementation)");
+    Ok((unvault_psbt, final_spend_psbt))
 }

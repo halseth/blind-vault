@@ -8,7 +8,7 @@ use musig2::secp::{MaybeScalar, Scalar};
 use secp256k1::{Secp256k1, SecretKey, rand};
 use serde::Serialize;
 use sha2::Digest;
-use shared::{InitResp, SignReq, SignResp};
+use shared::{InitResp, SignReq, SignResp, RecoverySignReq, RecoverySignResp, UnvaultSignReq, UnvaultSignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Write;
@@ -52,6 +52,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::JsonConfig::default().limit(256 * 1024 * 1024))
             .service(session_init)
             .service(session_sign)
+            .service(sign_recovery)
+            .service(sign_unvault)
     })
     .bind(bind)?
     .run()
@@ -174,4 +176,117 @@ async fn session_sign(
         sig: sig.encode_hex(),
     };
     Ok(web::Json(resp))
+}
+
+#[post("/vault/recovery/{id}")]
+async fn sign_recovery(
+    data: web::Data<AppState>,
+    id: web::Path<String>,
+    req: web::Json<RecoverySignReq>,
+) -> Result<impl Responder> {
+    println!("Recovery sign request for session: {}", id);
+    
+    let session_id = id.to_string();
+    
+    // Verify that this session exists and hasn't been used yet
+    let session = match data.sessions.lock().unwrap().get(&session_id) {
+        None => return Err(ResourceNotFound.into()),
+        Some(s) => s.clone(),
+    };
+    
+    // Verify ZK proof that the recovery transaction is valid
+    println!("Verifying ZK proof for recovery transaction...");
+    let zk_verification_result = verify_zk_proof(&req.zk_proof)?;
+    
+    if !zk_verification_result {
+        println!("ZK proof verification failed for recovery transaction");
+        return Err(ErrorInternalServerError("Invalid ZK proof"));
+    }
+    
+    // For now, return the PSBT unchanged (placeholder for actual signing)
+    // In a real implementation, this would:
+    // 1. Extract sighash from recovery PSBT
+    // 2. Generate blind signature on the sighash
+    // 3. Return signed PSBT
+    
+    println!("ZK proof verified - signing recovery transaction (placeholder)");
+    
+    let response = RecoverySignResp {
+        session_id,
+        signed_recovery_psbt: req.recovery_psbt.clone(),
+    };
+    
+    Ok(web::Json(response))
+}
+
+#[post("/vault/unvault/{id}")]
+async fn sign_unvault(
+    data: web::Data<AppState>,
+    id: web::Path<String>,
+    req: web::Json<UnvaultSignReq>,
+) -> Result<impl Responder> {
+    println!("Unvault sign request for session: {}", id);
+    
+    let session_id = id.to_string();
+    
+    // Verify that this session exists and hasn't been used yet  
+    let session = match data.sessions.lock().unwrap().get(&session_id) {
+        None => return Err(ResourceNotFound.into()),
+        Some(s) => s.clone(),
+    };
+    
+    // Verify ZK proof that both unvault transactions are valid
+    println!("Verifying ZK proof for unvault transactions...");
+    let zk_verification_result = verify_zk_proof(&req.zk_proof)?;
+    
+    if !zk_verification_result {
+        println!("ZK proof verification failed for unvault transactions");
+        return Err(ErrorInternalServerError("Invalid ZK proof"));
+    }
+    
+    // For now, return the PSBTs unchanged (placeholder for actual signing)
+    // In a real implementation, this would:
+    // 1. Extract sighashes from both PSBTs
+    // 2. Generate blind signatures on both sighashes
+    // 3. Return signed PSBTs
+    
+    println!("ZK proof verified - signing unvault transactions (placeholder)");
+    
+    let response = UnvaultSignResp {
+        session_id,
+        signed_unvault_psbt: req.unvault_psbt.clone(),
+        signed_final_spend_psbt: req.final_spend_psbt.clone(),
+    };
+    
+    Ok(web::Json(response))
+}
+
+// Helper function to verify ZK proofs
+// This calls the external ZK proof verification tool
+fn verify_zk_proof(zk_proof: &str) -> Result<bool> {
+    println!("Verifying ZK proof with length: {}", zk_proof.len());
+    
+    // Call the external ZK verification tool
+    let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
+        .arg(format!("--verify=true"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| ErrorInternalServerError(format!("Failed to spawn ZK verifier: {}", e)))?;
+    
+    child.stdin.as_mut().unwrap().write_all(zk_proof.as_bytes())
+        .map_err(|e| ErrorInternalServerError(format!("Failed to write ZK proof: {}", e)))?;
+    
+    let output = child.wait_with_output()
+        .map_err(|e| ErrorInternalServerError(format!("ZK verifier failed: {}", e)))?;
+    
+    if !output.status.success() {
+        println!("ZK proof verification failed: {}", String::from_utf8_lossy(&output.stderr));
+        return Ok(false);
+    }
+    
+    let proof_output = String::from_utf8(output.stdout)
+        .map_err(|e| ErrorInternalServerError(format!("Invalid ZK proof output: {}", e)))?;
+    println!("ZK proof verification output: {}", proof_output);
+    
+    Ok(true)
 }
