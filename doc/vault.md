@@ -18,13 +18,14 @@ the deposit tx and send the coins into the control of he signer quorum.
 
 To unvault the funds, the owner will get a fresh set of keys and nonces from
 the signers, and create an unvault tx that spends the funds to this public key,
-along with a script path that spends it all back to the recovery address.
+along with a script path that spends it all back to the recovery address. This
+tx (or the sign request) must commit to the final destination of the funds.
 
 Another spend tx is then created, that is timelocked and spends the funds to
 the final destination. This tx and proof is sent to the signers who will
 validate that the tx is indeed correctly crafted, then sign it.
 
 The unvault tx is then sent as a sign request to the signers along with a ZK
-proof. This proof must prove that the spend is to  n output that has a
+proof. This proof must prove that the spend is to an output that has a
 timelocked script path, and that the output key is correct.
 

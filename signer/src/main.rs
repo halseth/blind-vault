@@ -133,8 +133,39 @@ async fn session_sign(
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
     };
 
-    println!("zk_proof: {}",  req.zk_proof.len());
+    match req.tx_type.as_str() {
+        "RECOVERY" => {
+            // TODO: tx spends to hardcoded recovery address (committed to during init?, or at first sign)
+        },
+        "VAULT" => {},
+        "UNVAULT" => {
+            // TODO: tx spends into a new address derived from the same session pubkey, just with an added tweak (maybe the script tree is tweak enough?)
+            // + a script path spending to the recovery address (must provably be only script path),
+            // also committing to a final destination
+        },
+        "FINAL" => {
+            // TODO: tx is timelocked, spends from the unvault output key and spends to final destination.
+        },
+        _ => {
+            return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into());
+        },
+    }
 
+    // TODO: need two proofs:
+    // 1) verify that the musig is created correctly (zk-musig)
+    // 2a) check that the recovery transaction one is signing is correct
+    //  zk-tx:
+    //  - spends all funds into hardcoded recovery address (1-in-1-out)
+    // 2b) check that the unvault transaction one is signing is correct
+    //  zk-tx:
+    //  - spends all funds into aggeregate pubkey that is derived from the same pubkeys that the deposit went to. (can use exact same pubkey for now? or just tweak it).
+    //  - check that it has a timelocked script path spending to the recovery addr
+    // 2c) check that the spend from the unvault is correct
+    //  zk-tx:
+    //  - spends all funds into a pre-determined address
+
+
+    println!("zk_proof: {}",  req.zk_proof.len());
     let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
         //.env("RISC0_DEV_MODE", "true")
         .arg(format!("--verify=true"))
@@ -150,7 +181,6 @@ async fn session_sign(
         println!("zk_proof failed: {}", String::from_utf8_lossy(&output.stderr));
         return Err(ErrorInternalServerError("zk_proof failed"));
     }
-
 
     let proof = String::from_utf8(output.stdout).unwrap();
     //let proof = proof.strip_suffix("\n").unwrap();

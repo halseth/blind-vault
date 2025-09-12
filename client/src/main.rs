@@ -301,7 +301,7 @@ async fn sign_psbt(
     let body_json = serde_json::to_string(&deposit_psbt).unwrap();
     println!("body_json: {}", body_json);
 
-    // Create transaction that spends from this output (just into hardcoded dummy address for now).
+    // Create transaction that spends from this output (into the fallback address).
     // Future: add some sort of miniscript config for the spending transaction?
     let utxos: Vec<TxOut> = deposit_psbt.unsigned_tx.output.to_vec();
 
@@ -327,7 +327,7 @@ async fn sign_psbt(
         .unwrap()
         .script_pubkey();
 
-    let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee
+    let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee. TODO: use anchor instead?
     let spend_output = TxOut {
         value: spend_out_amt.unwrap(),
         script_pubkey: spend_script_pubkey.clone(),
