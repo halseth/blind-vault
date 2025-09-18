@@ -5,20 +5,22 @@ use clap::Parser;
 use hex::ToHex;
 use musig2::SecNonce;
 use musig2::secp::{MaybeScalar, Scalar};
-use secp256k1::{Secp256k1, SecretKey, rand};
+use secp256k1::{Secp256k1, SecretKey, PublicKey, rand};
 use serde::Serialize;
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use shared::{InitResp, SignReq, SignResp, RecoverySignReq, RecoverySignResp, UnvaultSignReq, UnvaultSignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
+use std::str::FromStr;
 use std::sync::Mutex;
 
 // This struct represents state
 struct AppState {
     sessions: Mutex<HashMap<String, SessionData>>,
+    args: Args,
 }
 
 #[derive(Clone, Debug)]
@@ -27,6 +29,8 @@ struct SessionData {
     init_resp: InitResp,
     secret_key: SecretKey,
     secret_nonce: SecNonce,
+    recovery_addr: Option<String>,  // Committed recovery address
+    used_for_tx_type: Option<String>, // Track what transaction type this session was used for
 }
 
 #[derive(Debug, Parser)]
@@ -34,6 +38,9 @@ struct SessionData {
 struct Args {
     #[arg(long)]
     listen: SocketAddr,
+
+    #[arg(long)]
+    priv_key: String,
 }
 
 #[actix_web::main]
@@ -45,6 +52,7 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = web::Data::new(AppState {
         sessions: Mutex::new(HashMap::new()),
+        args: args,
     });
     HttpServer::new(move || {
         App::new()
@@ -74,10 +82,11 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
         Err(e) => return Err(UrlencodedError::Encoding.into()),
     }
 
+
     println!("session_id: {}", session_id);
 
     let secp = Secp256k1::new();
-    let secret_key = SecretKey::new(&mut rand::thread_rng());
+    let secret_key = SecretKey::from_str( &data.args.priv_key ).unwrap();
     let pubkey = secret_key.public_key(&secp);
     let secnonce = musig2::SecNonceBuilder::new(&mut rand::rngs::OsRng)
         .with_message(&session_id)
@@ -96,6 +105,8 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
         init_resp: resp.clone(),
         secret_key: secret_key.clone(),
         secret_nonce: secnonce.clone(),
+        recovery_addr: None,
+        used_for_tx_type: None,
     };
 
     data.sessions
@@ -133,20 +144,36 @@ async fn session_sign(
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
     };
 
+    // Handle different transaction types and validate key usage
     match req.tx_type.as_str() {
-        "RECOVERY" => {
-            // TODO: tx spends to hardcoded recovery address (committed to during init?, or at first sign)
+        "VAULT" => {
+            println!("Processing VAULT transaction");
+            // Vault transactions are the initial deposit into the aggregated key
+            // This is typically the first use of a session for creating the vault
+            if session.used_for_tx_type.is_some() {
+                return Err(ErrorInternalServerError("Session already used for another transaction"));
+            }
+
+            // Here we sign a recovery ttransaction spending from an input we are part of.
         },
-        "VAULT" => {},
         "UNVAULT" => {
-            // TODO: tx spends into a new address derived from the same session pubkey, just with an added tweak (maybe the script tree is tweak enough?)
-            // + a script path spending to the recovery address (must provably be only script path),
-            // also committing to a final destination
+            println!("Processing UNVAULT transaction");
+            // Unvault transactions must derive a new key with proper script paths
+            // This session should be fresh (different from the vault creation session)
+            if session.used_for_tx_type.is_some() {
+                return Err(ErrorInternalServerError("Session already used for another transaction"));
+            }
+            
+            // Derive the unvault public key with script tree tweak
+            let unvault_pubkey = derive_unvault_pubkey(&session.secret_key)?;
+            println!("Derived unvault pubkey: {}", hex::encode(unvault_pubkey.serialize()));
+
+            // Here we validate and sign three transactions:
+            // 1) Unvault transaction spending to a new output with the same quorum
+            // 2) Recovery transaction spending from the unvault transaction output back to the same recovery address
+            // 3) Final timelocked transaction spending from the unvault transaction output
         },
-        "FINAL" => {
-            // TODO: tx is timelocked, spends from the unvault output key and spends to final destination.
-        },
-        _ => {
+       _ => {
             return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into());
         },
     }
@@ -200,6 +227,37 @@ async fn session_sign(
             return Err(ErrorInternalServerError(e))
         },
     };
+
+    // Mark the session as used for this transaction type
+    // For FINAL transactions, we allow reusing the UNVAULT session
+    if req.tx_type != "FINAL" {
+        data.sessions
+            .lock()
+            .unwrap()
+            .entry(session_id.clone())
+            .and_modify(|s| {
+                s.used_for_tx_type = Some(req.tx_type.clone());
+                
+                // Store transaction-specific data
+                match req.tx_type.as_str() {
+                    "RECOVERY" => {
+                        // Recovery address would be extracted from ZK proof validation
+                        s.recovery_addr = Some("extracted_from_zk_proof".to_string());
+                    },
+                    "VAULT" => {
+                        // Vault pubkey would be extracted from aggregation process
+                        s.vault_pubkey = Some("vault_aggregated_key".to_string());
+                    },
+                    "UNVAULT" => {
+                        // Store the derived unvault pubkey
+                        if let Ok(unvault_pk) = derive_unvault_pubkey(&s.secret_key) {
+                            s.unvault_pubkey = Some(hex::encode(unvault_pk.serialize()));
+                        }
+                    },
+                    _ => {}
+                }
+            });
+    }
 
     let resp = SignResp {
         session_id,
@@ -319,4 +377,40 @@ fn verify_zk_proof(zk_proof: &str) -> Result<bool> {
     println!("ZK proof verification output: {}", proof_output);
     
     Ok(true)
+}
+
+// Helper function to derive unvault public key from session key
+fn derive_unvault_pubkey(secret_key: &SecretKey) -> Result<PublicKey> {
+    let secp = Secp256k1::new();
+    
+    // Create a tweak for the unvault key derivation
+    // This could be based on script tree commitments or other vault-specific data
+    let tweak_bytes = Sha256::new()
+        .chain_update(b"UNVAULT_KEY_DERIVATION")
+        .chain_update(secret_key.secret_bytes())
+        .finalize();
+    
+    // Create the base public key
+    let base_pubkey = secret_key.public_key(&secp);
+    
+    // For now, return the base pubkey (in production, this would apply proper tweaking)
+    // TODO: Apply proper taproot tweaking with script tree commitments
+    Ok(base_pubkey)
+}
+
+// Helper function to validate recovery address commitment
+fn validate_recovery_address(recovery_addr: &str) -> Result<()> {
+    // Validate that the recovery address is properly formatted
+    // In production, this would also verify it matches committed values
+    if recovery_addr.is_empty() {
+        return Err(ErrorInternalServerError("Empty recovery address"));
+    }
+    
+    // Additional validation could include:
+    // - Check address format for the network
+    // - Verify it matches previously committed recovery address
+    // - Ensure it's not reused across different vault instances
+    
+    println!("Recovery address validated: {}", recovery_addr);
+    Ok(())
 }

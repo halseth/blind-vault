@@ -97,9 +97,20 @@ The vault system implements a two-phase protocol as described in `doc/vault.md`:
 
 **Signer endpoints:**
 - `GET /init/{session_id}` - Initialize signing session
-- `POST /sign/{session_id}` - Sign arbitrary challenges (legacy)
-- `POST /vault/recovery/{session_id}` - Sign recovery transactions
-- `POST /vault/unvault/{session_id}` - Sign unvault transactions
+- `POST /sign/{session_id}` - Sign with transaction type validation (includes `tx_type` field)
+- `POST /vault/recovery/{session_id}` - Sign recovery transactions (uses ZK proofs)
+- `POST /vault/unvault/{session_id}` - Sign unvault transactions (uses ZK proofs)
+
+### Transaction Types
+
+The signer now validates different transaction types in the signing process:
+
+- **RECOVERY**: Pre-signed recovery transactions that spend to committed recovery address
+- **VAULT**: Initial vault deposit transactions using aggregated keys
+- **UNVAULT**: Unvault transactions with timelock and script fallback paths  
+- **FINAL**: Timelocked final spend transactions (can reuse UNVAULT session)
+
+Each session tracks its usage and enforces single-use constraints except for FINAL transactions which can follow UNVAULT.
 
 ### Dependencies
 

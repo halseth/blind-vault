@@ -63,9 +63,7 @@ struct AppState {
 #[derive(Clone, Debug)]
 struct SessionData {
     session_id: String,
-    init_resp: InitResp,
-    secret_key: SecretKey,
-    secret_nonce: SecNonce,
+    signing_session: SigningSession,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -102,9 +100,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .app_data(app_state.clone())
-            .service(sign_psbt)
-            .service(vault_deposit)
-            .service(vault_unvault)
+            .service(sign_vault)
+            .service(sign_unvault)
     })
     .bind(bind)?
     .run()
@@ -169,6 +166,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         &pubkeys,
         &public_nonces,
         &coeff_salt,
+        "VAULT", // This is a demo signing for vault creation
     )
     .await?;
 
@@ -202,7 +200,7 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
             .collect(),
-        pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
+        pubkeys: pubkeys.iter().map(|pk| hex::encode(pk.to_encoded_point(false).as_bytes())).collect(),
         pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
         message: message.to_string(),
         signer_index: 0,
@@ -257,9 +255,8 @@ fn dummy_unspent_transaction_outputs() -> Vec<(OutPoint, TxOut)> {
     };
     vec![(out_point_1, utxo_1), (out_point_2, utxo_2)]
 }
-
-#[post("/psbt")]
-async fn sign_psbt(
+#[post("/vault")]
+async fn sign_vault(
     data: web::Data<AppState>,
     //id: web::Path<String>,
     req: web::Json<SignPsbtReq>,
@@ -333,7 +330,7 @@ async fn sign_psbt(
         script_pubkey: spend_script_pubkey.clone(),
     };
 
-    let spending_tx = Transaction {
+    let recovery_tx = Transaction {
         version: transaction::Version::TWO,  // Post BIP 68.
         lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
         input: vec![spend_input],            // Input is 0-indexed.
@@ -344,9 +341,9 @@ async fn sign_psbt(
         hex::encode(consensus::encode::serialize(&utxos[0]))
     );
 
-    let mut spend_psbt =
-        Psbt::from_unsigned_tx(spending_tx.clone()).expect("Could not create PSBT");
-    spend_psbt.inputs = vec![Input {
+    let mut recovery_psbt =
+        Psbt::from_unsigned_tx(recovery_tx.clone()).expect("Could not create PSBT");
+    recovery_psbt.inputs = vec![Input {
         witness_utxo: Some(utxos[0].clone()),
         //tap_key_origins: origins[0].clone(),
         //tap_internal_key: Some(pk_input_1),
@@ -354,8 +351,8 @@ async fn sign_psbt(
         ..Default::default()
     }];
 
-    let mut cache = SighashCache::new(&spending_tx);
-    let (msg, sighash_type) = spend_psbt.sighash_taproot(0, &mut cache, None).unwrap();
+    let mut cache = SighashCache::new(&recovery_tx);
+    let (msg, sighash_type) = recovery_psbt.sighash_taproot(0, &mut cache, None).unwrap();
     let message = msg.as_ref();
 
     println!("msg: {:?}", msg);
@@ -403,8 +400,9 @@ async fn sign_psbt(
         &pubkeys,
         &public_nonces,
         &coeff_salt,
+        "RECOVERY", // Legacy PSBT signing for recovery transactions
     )
-    .await?;
+        .await?;
 
     verify_partial_sigs(
         &public_nonces,
@@ -424,20 +422,20 @@ async fn sign_psbt(
     musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
         .expect("aggregated signature must be valid");
 
-    let signature = schnorr::Signature::from_slice(&final_signature).unwrap();
+    let signature = schnorr::Signature::try_from(&final_signature[..]).unwrap();
 
     let signature = taproot::Signature {
         signature,
         sighash_type,
     };
 
-    let mut sign_input = spend_psbt.inputs[0].clone();
+    let mut sign_input = recovery_psbt.inputs[0].clone();
 
     sign_input.tap_key_sig = Some(signature);
-    spend_psbt.inputs[0] = sign_input;
+    recovery_psbt.inputs[0] = sign_input;
 
     // Step 4: Finalizer role; that finalizes the PSBT.
-    spend_psbt.inputs.iter_mut().for_each(|input| {
+    recovery_psbt.inputs.iter_mut().for_each(|input| {
         let mut script_witness: Witness = Witness::new();
         script_witness.push(input.tap_key_sig.unwrap().to_vec());
         input.final_script_witness = Some(script_witness);
@@ -450,7 +448,7 @@ async fn sign_psbt(
         input.bip32_derivation = BTreeMap::new();
     });
 
-    let spend_tx = spend_psbt.clone().extract_tx().unwrap();
+    let spend_tx = recovery_psbt.clone().extract_tx().unwrap();
 
     let serialized_signed_tx = consensus::encode::serialize_hex(&spend_tx);
     let serialized_funding_tx = consensus::encode::serialize_hex(&deposit_tx);
@@ -458,7 +456,7 @@ async fn sign_psbt(
     // check with:
     // bitcoin-cli decoderawtransaction <RAW_TX> true
     println!("Raw deposit Transaction: {}", serialized_funding_tx);
-    println!("Raw spending Transaction: {}", serialized_signed_tx);
+    println!("Raw recovery Transaction: {}", serialized_signed_tx);
 
     let res = spend_tx
         .verify(|op| {
@@ -468,13 +466,245 @@ async fn sign_psbt(
         .unwrap();
     println!("Transaction Result: {:#?}", res);
 
+    sessions.iter().map(| s | {
+        let session_data = SessionData {
+            session_id: s.session_id.clone(),
+            signing_session: s.clone(),
+        };
+
+        data.sessions
+            .lock()
+            .unwrap()
+            .insert(s.session_id, session_data);
+    });
+
+
     let resp = SignPsbtResp {
         deposit_psbt: deposit_psbt,
-        spend_psbt: spend_psbt,
+        spend_psbt: recovery_psbt,
     };
     Ok(web::Json(resp))
 }
 
+//#[post("/unvault")]
+//async fn sign_unvault(
+//    data: web::Data<AppState>,
+//    //id: web::Path<String>,
+//    req: web::Json<SignPsbtReq>,
+//) -> actix_web::Result<impl Responder> {
+//    println!("req: {:?}", req);
+//
+//    let secp = Secp256k1::new();
+//
+//    let cfg = data.cfg.clone();
+//    let args = Args::parse();
+//
+//    let sessions = init_signer_sessions(&cfg).await?;
+//    let num_signers = sessions.len();
+//
+//    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
+//
+//    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
+//        aggregate_pubs(&sessions, Some(&coeff_salt));
+//
+//    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
+//    println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
+//    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+//
+//    let pk = bitcoin::secp256k1::PublicKey::from_slice(&untweaked_aggregated_pubkey.serialize())
+//        .unwrap();
+//    let (xpub, _) = pk.x_only_public_key();
+//    println!("agg pubkey: {} x-only:{}", pk, xpub);
+//
+//    let tap = Address::p2tr(&secp, xpub, None, Mainnet);
+//    let sp = tap.script_pubkey();
+//
+//    let mut deposit_psbt = req.psbt.clone();
+//    if let Some(output) = deposit_psbt.unsigned_tx.output.get_mut(0) {
+//        output.script_pubkey = sp.clone();
+//    }
+//
+//    println!("deposit: {:?}", deposit_psbt);
+//
+//    let body_json = serde_json::to_string(&deposit_psbt).unwrap();
+//    println!("body_json: {}", body_json);
+//
+//    // Create transaction that spends from this output (into the fallback address).
+//    // Future: add some sort of miniscript config for the spending transaction?
+//    let utxos: Vec<TxOut> = deposit_psbt.unsigned_tx.output.to_vec();
+//
+//    println!(
+//        "deposit transaction Details: {:#?}",
+//        deposit_psbt.unsigned_tx
+//    );
+//
+//    let deposit_tx = deposit_psbt.unsigned_tx.clone();
+//    let txid = deposit_tx.compute_txid();
+//    let op = OutPoint::from_str(format!("{}:0", txid).as_str()).unwrap();
+//
+//    let spend_input = TxIn {
+//        previous_output: op,
+//        script_sig: ScriptBuf::default(),
+//        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+//        witness: Witness::default(),
+//    };
+//
+//    let spend_script_pubkey = Address::from_str(&req.fallback_addr)
+//        .unwrap()
+//        .require_network(args.network)
+//        .unwrap()
+//        .script_pubkey();
+//
+//    let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee. TODO: use anchor instead?
+//    let spend_output = TxOut {
+//        value: spend_out_amt.unwrap(),
+//        script_pubkey: spend_script_pubkey.clone(),
+//    };
+//
+//    let recovery_tx = Transaction {
+//        version: transaction::Version::TWO,  // Post BIP 68.
+//        lock_time: absolute::LockTime::ZERO, // Ignore the locktime.
+//        input: vec![spend_input],            // Input is 0-indexed.
+//        output: vec![spend_output],          // Outputs, order does not matter.
+//    };
+//    println!(
+//        "prevout: {}",
+//        hex::encode(consensus::encode::serialize(&utxos[0]))
+//    );
+//
+//    let mut recovery_psbt =
+//        Psbt::from_unsigned_tx(recovery_tx.clone()).expect("Could not create PSBT");
+//    recovery_psbt.inputs = vec![Input {
+//        witness_utxo: Some(utxos[0].clone()),
+//        //tap_key_origins: origins[0].clone(),
+//        //tap_internal_key: Some(pk_input_1),
+//        //sighash_type: Some(ty),
+//        ..Default::default()
+//    }];
+//
+//    let mut cache = SighashCache::new(&recovery_tx);
+//    let (msg, sighash_type) = recovery_psbt.sighash_taproot(0, &mut cache, None).unwrap();
+//    let message = msg.as_ref();
+//
+//    println!("msg: {:?}", msg);
+//    println!("sighash_type: {:?}", sighash_type);
+//
+//    let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
+//    let bbs: MaybePoint = blinding_factors
+//        .iter()
+//        .enumerate()
+//        .map(|(i, fac)| {
+//            let pubkey: Point = pubkeys[i].into();
+//            fac.beta * pubkey
+//        })
+//        .sum();
+//
+//    let ggs: MaybePoint = blinding_factors
+//        .iter()
+//        .enumerate()
+//        .map(|(i, fac)| {
+//            let nonce = public_nonces[i].clone();
+//            fac.gamma * nonce.R2
+//        })
+//        .sum();
+//
+//    let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
+//    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
+//    let sign_nonce = agg_nonce + ggs + aas * G + bbs;
+//
+//    let adaptor_point = MaybePoint::Infinity;
+//    let adapted_nonce = sign_nonce + adaptor_point;
+//
+//    let nonce_x_bytes = adapted_nonce.serialize_xonly();
+//    let e: MaybeScalar =
+//        compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
+//
+//    let partial_signatures = request_partial_sigs(
+//        sessions,
+//        &key_agg_ctx,
+//        tweaked_aggregated_pubkey,
+//        &blinding_factors,
+//        sign_nonce,
+//        b,
+//        e,
+//        hex::encode(message),
+//        &pubkeys,
+//        &public_nonces,
+//        &coeff_salt,
+//        "RECOVERY", // Legacy PSBT signing for recovery transactions
+//    )
+//    .await?;
+//
+//    verify_partial_sigs(
+//        &public_nonces,
+//        &key_agg_ctx,
+//        tweaked_aggregated_pubkey,
+//        &blinding_factors,
+//        sign_nonce,
+//        b,
+//        e,
+//        &partial_signatures,
+//    );
+//
+//    let unblinded_sigs = unblind_partial_sigs(&blinding_factors, sign_nonce, partial_signatures);
+//
+//    let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
+//
+//    musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
+//        .expect("aggregated signature must be valid");
+//
+//    let signature = schnorr::Signature::try_from(&final_signature[..]).unwrap();
+//
+//    let signature = taproot::Signature {
+//        signature,
+//        sighash_type,
+//    };
+//
+//    let mut sign_input = recovery_psbt.inputs[0].clone();
+//
+//    sign_input.tap_key_sig = Some(signature);
+//    recovery_psbt.inputs[0] = sign_input;
+//
+//    // Step 4: Finalizer role; that finalizes the PSBT.
+//    recovery_psbt.inputs.iter_mut().for_each(|input| {
+//        let mut script_witness: Witness = Witness::new();
+//        script_witness.push(input.tap_key_sig.unwrap().to_vec());
+//        input.final_script_witness = Some(script_witness);
+//
+//        // Clear all the data fields as per the spec.
+//        input.partial_sigs = BTreeMap::new();
+//        input.sighash_type = None;
+//        input.redeem_script = None;
+//        input.witness_script = None;
+//        input.bip32_derivation = BTreeMap::new();
+//    });
+//
+//    let spend_tx = recovery_psbt.clone().extract_tx().unwrap();
+//
+//    let serialized_signed_tx = consensus::encode::serialize_hex(&spend_tx);
+//    let serialized_funding_tx = consensus::encode::serialize_hex(&deposit_tx);
+//    println!("Transaction Details: {:#?}", spend_tx);
+//    // check with:
+//    // bitcoin-cli decoderawtransaction <RAW_TX> true
+//    println!("Raw deposit Transaction: {}", serialized_funding_tx);
+//    println!("Raw recovery Transaction: {}", serialized_signed_tx);
+//
+//    let res = spend_tx
+//        .verify(|op| {
+//            println!("fetchin op {}", op);
+//            Some(utxos[0].clone())
+//        })
+//        .unwrap();
+//    println!("Transaction Result: {:#?}", res);
+//
+//    let resp = SignPsbtResp {
+//        deposit_psbt: deposit_psbt,
+//        spend_psbt: recovery_psbt,
+//    };
+//    Ok(web::Json(resp))
+//}
+
+#[derive(Clone, Debug)]
 struct SigningSession {
     signer: String,
     session_id: String,
@@ -596,6 +826,7 @@ async fn request_partial_sigs(
     pubkeys: &Vec<PublicKey>,
     public_nonces: &Vec<PubNonce>,
     coeff_salt: &[u8; 32],
+    tx_type: &str,
 ) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
     let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
     let nonce_parity = sign_nonce.parity();
@@ -632,7 +863,7 @@ async fn request_partial_sigs(
                     )
                 })
                 .collect(),
-            pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
+            pubkeys: pubkeys.iter().map(|pk| hex::encode(pk.to_encoded_point(false).as_bytes())).collect(),
             pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
             message: message.clone(),
             signer_index: i,
@@ -661,6 +892,7 @@ async fn request_partial_sigs(
             nonce_parity: nonce_parity.unwrap_u8(),
             b: bp.encode_hex(),
             e: hex::encode(ep),
+            tx_type: tx_type.to_string(),
             zk_proof: proof.to_string(),
         };
         // TODO: attach ZK proof that these values are createed accoring to the protocol
@@ -766,117 +998,6 @@ fn parse_pubkey(pub_str: &str) -> PublicKey {
     pk
 }
 
-#[post("/vault/deposit")]
-async fn vault_deposit(
-    data: web::Data<AppState>,
-    req: web::Json<VaultDepositReq>,
-) -> actix_web::Result<impl Responder> {
-    println!("Vault deposit request: {:?}", req);
-    
-    let cfg = data.cfg.clone();
-    
-    // Initialize signer sessions
-    let sessions = init_signer_sessions(&cfg).await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to initialize signers: {}", e)))?;
-    
-    let num_signers = sessions.len();
-    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
-    
-    // Aggregate public keys and nonces from signers
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt));
-    
-    // This is the vault public key (aggregated from signers)
-    let vault_pubkey: Point = key_agg_ctx.aggregated_pubkey();
-    println!("Vault public key: {}", vault_pubkey);
-    
-    // Create the deposit transaction output to the vault pubkey
-    let mut deposit_psbt = req.deposit_psbt.clone();
-    
-    // Update the deposit PSBT to use the vault pubkey as the output
-    // This assumes the deposit PSBT has a single output that needs to be updated
-    if let Some(output) = deposit_psbt.unsigned_tx.output.get_mut(0) {
-        // Convert Point to Bitcoin address for P2TR
-        let vault_addr = create_p2tr_address(&vault_pubkey);
-        output.script_pubkey = vault_addr.script_pubkey();
-        println!("Updated deposit output to vault address: {}", vault_addr);
-    }
-    
-    // Create recovery transaction that spends from vault to recovery address
-    let recovery_psbt = create_recovery_transaction(&deposit_psbt, &req.recovery_addr)?;
-    
-    // Request signers to sign the recovery transaction
-    let signed_recovery_psbt = request_recovery_signatures(
-        &sessions,
-        &key_agg_ctx,
-        &blinding_factors,
-        &pubkeys,
-        &public_nonces,
-        &coeff_salt,
-        recovery_psbt,
-    ).await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to get recovery signatures: {}", e)))?;
-    
-    let response = VaultDepositResp {
-        deposit_psbt,
-        recovery_psbt: signed_recovery_psbt,
-        vault_pubkey: hex::encode(vault_pubkey.serialize_xonly()),
-    };
-    
-    Ok(web::Json(response))
-}
-
-#[post("/vault/unvault")]
-async fn vault_unvault(
-    data: web::Data<AppState>,
-    req: web::Json<VaultUnvaultReq>,
-) -> actix_web::Result<impl Responder> {
-    println!("Vault unvault request: {:?}", req);
-    
-    let cfg = data.cfg.clone();
-    
-    // Initialize fresh signer sessions for unvaulting
-    let sessions = init_signer_sessions(&cfg).await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to initialize signers: {}", e)))?;
-    
-    let num_signers = sessions.len();
-    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
-    
-    // Aggregate public keys and nonces from signers
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt));
-    
-    // This is the unvault public key (fresh aggregated key)
-    let unvault_pubkey: Point = key_agg_ctx.aggregated_pubkey();
-    println!("Unvault public key: {}", unvault_pubkey);
-    
-    // Create unvault transaction (vault -> unvault address with timelock + script fallback)
-    let unvault_psbt = create_unvault_transaction(&req)?;
-    
-    // Create final spend transaction (timelocked spend from unvault to destination)
-    let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt)?;
-    
-    // Request signers to sign both transactions
-    let (signed_unvault_psbt, signed_final_spend_psbt) = request_unvault_signatures(
-        &sessions,
-        &key_agg_ctx,
-        &blinding_factors,
-        &pubkeys,
-        &public_nonces,
-        &coeff_salt,
-        unvault_psbt,
-        final_spend_psbt,
-    ).await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to get unvault signatures: {}", e)))?;
-    
-    let response = VaultUnvaultResp {
-        unvault_psbt: signed_unvault_psbt,
-        final_spend_psbt: signed_final_spend_psbt,
-        unvault_pubkey: hex::encode(unvault_pubkey.serialize_xonly()),
-    };
-    
-    Ok(web::Json(response))
-}
 
 // Helper function to create P2TR address from a Point
 fn create_p2tr_address(pubkey: &Point) -> Address {
@@ -959,14 +1080,18 @@ async fn request_recovery_signatures(
     recovery_psbt: Psbt,
 ) -> Result<Psbt, Box<dyn std::error::Error>> {
     // This would implement the blind signing protocol for the recovery transaction
-    // For now, return the unsigned PSBT
+    // For now, return the unsigned PSBT as we haven't fully implemented the signing
     // In a real implementation, this would:
-    // 1. Generate ZK proof that recovery transaction is valid
-    // 2. Send RecoverySignReq to each signer with the proof
+    // 1. Extract sighash from recovery PSBT
+    // 2. Call request_partial_sigs with "RECOVERY" transaction type
     // 3. Aggregate the partial signatures
     // 4. Return the fully signed recovery PSBT
     
-    println!("Requesting recovery signatures (placeholder implementation)");
+    println!("Requesting recovery signatures for vault deposit");
+    
+    // TODO: Extract message/sighash from recovery PSBT and call request_partial_sigs
+    // with "RECOVERY" transaction type once PSBT signing is fully integrated
+    
     Ok(recovery_psbt)
 }
 
@@ -984,11 +1109,16 @@ async fn request_unvault_signatures(
     // This would implement the blind signing protocol for unvault transactions
     // For now, return the unsigned PSBTs
     // In a real implementation, this would:
-    // 1. Generate ZK proofs that both transactions are valid
-    // 2. Send UnvaultSignReq to each signer with the proofs
-    // 3. Aggregate the partial signatures for both transactions
-    // 4. Return the fully signed PSBTs
+    // 1. Extract sighashes from both PSBTs 
+    // 2. Call request_partial_sigs with "UNVAULT" for the first transaction
+    // 3. Call request_partial_sigs with "FINAL" for the second transaction
+    // 4. Aggregate the partial signatures for both transactions
+    // 5. Return the fully signed PSBTs
     
-    println!("Requesting unvault signatures (placeholder implementation)");
+    println!("Requesting unvault signatures for unvault and final spend transactions");
+    
+    // TODO: Extract messages/sighashes from both PSBTs and call request_partial_sigs
+    // with appropriate transaction types ("UNVAULT" and "FINAL")
+    
     Ok((unvault_psbt, final_spend_psbt))
 }
