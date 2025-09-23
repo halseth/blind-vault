@@ -3,6 +3,7 @@ use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::KnownHrp::Mainnet;
 use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
+use bitcoin::hex::DisplayHex;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::sighash::SighashCache;
@@ -12,13 +13,13 @@ use bitcoin::{
 };
 use clap::Parser;
 use hex::ToHex;
+use musig2::secp::{Point, MaybePoint, MaybeScalar, Scalar, G};
 use musig2::{
     AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce, compute_challenge_hash_tweak,
     verify_partial_challenge,
 };
-use musig2::secp::{Point, MaybePoint, MaybeScalar, Scalar, G};
 use rand::Rng;
-use k256::{PublicKey, SecretKey, schnorr};
+use secp256k1::{PublicKey, SecretKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, RecoverySignReq, RecoverySignResp, VaultUnvaultReq, VaultUnvaultResp, UnvaultSignReq, UnvaultSignResp};
@@ -101,7 +102,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .app_data(app_state.clone())
             .service(sign_vault)
-            .service(sign_unvault)
+            //.service(sign_unvault)
     })
     .bind(bind)?
     .run()
@@ -188,25 +189,25 @@ async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
         .expect("aggregated signature must be valid");
 
-    let zk_params = Params {
-        coeff_salt: hex::encode(coeff_salt),
-        blinding_factors: blinding_factors
-            .iter()
-            .map(|fac| {
-                (
-                    hex::encode(fac.alpha),
-                    hex::encode(fac.beta),
-                    hex::encode(fac.gamma),
-                )
-            })
-            .collect(),
-        pubkeys: pubkeys.iter().map(|pk| hex::encode(pk.to_encoded_point(false).as_bytes())).collect(),
-        pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
-        message: message.to_string(),
-        signer_index: 0,
-    };
+    //let zk_params = Params {
+    //    coeff_salt: hex::encode(coeff_salt),
+    //    blinding_factors: blinding_factors
+    //        .iter()
+    //        .map(|fac| {
+    //            (
+    //                hex::encode(fac.alpha),
+    //                hex::encode(fac.beta),
+    //                hex::encode(fac.gamma),
+    //            )
+    //        })
+    //        .collect(),
+    //    pubkeys: pubkeys.iter().map(|pk| hex::encode(pk.to_encoded_point(false).as_bytes())).collect(),
+    //    pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
+    //    message: message.to_string(),
+    //    signer_index: 0,
+    //};
 
-    println!("params: {}", serde_json::to_string(&zk_params).unwrap());
+    //println!("params: {}", serde_json::to_string(&zk_params).unwrap());
 
     Ok(())
 }
@@ -422,7 +423,7 @@ async fn sign_vault(
     musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
         .expect("aggregated signature must be valid");
 
-    let signature = schnorr::Signature::try_from(&final_signature[..]).unwrap();
+    let signature = schnorr::Signature::from_slice(&final_signature).unwrap();
 
     let signature = taproot::Signature {
         signature,
@@ -466,17 +467,17 @@ async fn sign_vault(
         .unwrap();
     println!("Transaction Result: {:#?}", res);
 
-    sessions.iter().map(| s | {
-        let session_data = SessionData {
-            session_id: s.session_id.clone(),
-            signing_session: s.clone(),
-        };
+    //sessions.iter().map(| s | {
+    //    let session_data = SessionData {
+    //        session_id: s.session_id.clone(),
+    //        signing_session: s.clone(),
+    //    };
 
-        data.sessions
-            .lock()
-            .unwrap()
-            .insert(s.session_id, session_data);
-    });
+    //    data.sessions
+    //        .lock()
+    //        .unwrap()
+    //        .insert(s.session_id, session_data);
+    //});
 
 
     let resp = SignPsbtResp {
@@ -863,7 +864,7 @@ async fn request_partial_sigs(
                     )
                 })
                 .collect(),
-            pubkeys: pubkeys.iter().map(|pk| hex::encode(pk.to_encoded_point(false).as_bytes())).collect(),
+            pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
             pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
             message: message.clone(),
             signer_index: i,
@@ -990,10 +991,11 @@ fn aggregate_pubs(
 }
 
 fn parse_pubkey(pub_str: &str) -> PublicKey {
-    let pk_bytes = hex::decode(pub_str).unwrap();
-    let pk = PublicKey::from_sec1_bytes(&pk_bytes).unwrap();
+    let pk = PublicKey::from_str(pub_str).unwrap();
+    //let pk_bytes = hex::decode(pub_str).unwrap();
+    //let pk = PublicKey::from_sec1_bytes(&pk_bytes).unwrap();
 
-    println!("sec1 pub: {}", hex::encode(pk_bytes));
+    //println!("sec1 pub: {}", hex::encode(pk_bytes));
 
     pk
 }
