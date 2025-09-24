@@ -69,6 +69,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    create_vault().await;
+}
+
+async fn create_vault() {
     let args = Args::parse();
 
     let secp = Secp256k1::new();
@@ -166,15 +170,18 @@ async fn main() {
     let resp = initiate_vault_deposit(args.client_url.unwrap(), &psbt, args.recovery_addr.clone())
         .await
         .unwrap();
-    
+
     println!("Vault deposit response: {:?}", resp);
     println!("Vault pubkey: {}", resp.vault_pubkey);
-    
+
     // Extract the pre-signed recovery transaction
     let recovery_tx = resp.recovery_psbt.extract_tx().expect("valid recovery tx");
     let mut deposit_psbt = resp.deposit_psbt;
     let serialized_recovery_tx = consensus::encode::serialize_hex(&recovery_tx);
-    println!("Pre-signed recovery transaction details: {:#?}", recovery_tx);
+    println!(
+        "Pre-signed recovery transaction details: {:#?}",
+        recovery_tx
+    );
     println!("Raw recovery transaction: {}", serialized_recovery_tx);
 
     let mut key_map: HashMap<bitcoin::XOnlyPublicKey, PrivateKey> = HashMap::new();
@@ -242,7 +249,7 @@ async fn initiate_vault_deposit(
     recovery_addr: String,
 ) -> Result<VaultDepositResp, reqwest::Error> {
     let client = reqwest::Client::new();
-    let url = format!("http://{}/vault/deposit", client_addr);
+    let url = format!("http://{}/vault", client_addr);
     println!("url: {}", url);
 
     let body_json = serde_json::to_string(&psbt).unwrap();
