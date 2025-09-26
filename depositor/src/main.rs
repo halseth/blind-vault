@@ -16,7 +16,7 @@ use bitcoin::{
     Address, Amount, Network, OutPoint, PrivateKey, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Witness, consensus, transaction,
 };
-use shared::{SignPsbtReq, SignPsbtResp, VaultDepositReq, VaultDepositResp};
+use shared::{VaultDepositReq, VaultDepositResp, VaultUnvaultReq, VaultUnvaultResp};
 
 fn parse_address(addr: &str, network: Network) -> Address {
     Address::from_str(addr)
@@ -76,7 +76,30 @@ enum Commands {
     },
     /// Unvault an existing vault deposit
     Unvault {
-        // TODO: Add unvault-specific arguments
+        /// The vault output to unvault (txid:vout format)
+        #[arg(long)]
+        vault_outpoint: OutPoint,
+
+        /// Amount in the vault UTXO
+        #[arg(long)]
+        vault_amount: Amount,
+
+        /// Final destination address for the sweep transaction
+        #[arg(long)]
+        destination_addr: String,
+
+        /// Timelock height for the sweep transaction (in blocks)
+        #[arg(long)]
+        timelock_blocks: u32,
+
+        /// Recovery address (fallback option)
+        #[arg(long)]
+        recovery_addr: String,
+
+        /// Client server URL
+        #[arg(long)]
+        client_url: SocketAddr,
+
         /// Network to use.
         #[arg(long, default_value_t = Network::Signet)]
         network: Network,
@@ -113,8 +136,24 @@ async fn main() {
                 network
             ).await;
         }
-        Commands::Unvault { network } => {
-            unvault(network).await;
+        Commands::Unvault {
+            vault_outpoint,
+            vault_amount,
+            destination_addr,
+            timelock_blocks,
+            recovery_addr,
+            client_url,
+            network
+        } => {
+            unvault(
+                vault_outpoint,
+                vault_amount,
+                destination_addr,
+                timelock_blocks,
+                recovery_addr,
+                client_url,
+                network
+            ).await;
         }
     }
 }
@@ -323,8 +362,95 @@ async fn initiate_vault_deposit(
     Ok(j)
 }
 
-async fn unvault(network: Network) {
-    println!("Unvault functionality not yet implemented");
+async fn unvault(
+    vault_outpoint: OutPoint,
+    vault_amount: Amount,
+    destination_addr: String,
+    timelock_blocks: u32,
+    recovery_addr: String,
+    client_url: SocketAddr,
+    network: Network,
+) {
+    println!("Starting unvault process...");
+    println!("Vault outpoint: {}", vault_outpoint);
+    println!("Vault amount: {}", vault_amount);
+    println!("Destination address: {}", destination_addr);
+    println!("Timelock blocks: {}", timelock_blocks);
+    println!("Recovery address: {}", recovery_addr);
+    println!("Client URL: {}", client_url);
     println!("Network: {}", network);
-    // TODO: Implement unvault logic
+
+    // Validate destination address
+    let _dest_addr = parse_address(&destination_addr, network);
+    let _recovery_addr = parse_address(&recovery_addr, network);
+
+    // TODO: Call client to create unvault transactions
+    match initiate_vault_unvault(
+        client_url,
+        vault_outpoint,
+        vault_amount,
+        destination_addr,
+        timelock_blocks,
+        recovery_addr,
+    ).await {
+        Ok(resp) => {
+            println!("Unvault response: {:?}", resp);
+
+            // Display transaction details
+            let unvault_tx = resp.unvault_psbt.extract_tx().expect("valid unvault tx");
+            let recovery_tx = resp.recovery_psbt.extract_tx().expect("valid recovery tx");
+            let final_spend_tx = resp.final_spend_psbt.extract_tx().expect("valid final spend tx");
+
+            println!("Unvault transaction: {:#?}", unvault_tx);
+            println!("Recovery transaction: {:#?}", recovery_tx);
+            println!("Final spend transaction: {:#?}", final_spend_tx);
+
+            let serialized_unvault = consensus::encode::serialize_hex(&unvault_tx);
+            let serialized_recovery = consensus::encode::serialize_hex(&recovery_tx);
+            let serialized_final = consensus::encode::serialize_hex(&final_spend_tx);
+
+            println!("Raw unvault transaction: {}", serialized_unvault);
+            println!("Raw recovery transaction: {}", serialized_recovery);
+            println!("Raw final spend transaction: {}", serialized_final);
+
+            println!("Unvault transactions created successfully!");
+            println!("You can now broadcast the unvault transaction, wait for the timelock, then broadcast the final spend.");
+        }
+        Err(e) => {
+            eprintln!("Failed to initiate unvault: {}", e);
+        }
+    }
+}
+
+async fn initiate_vault_unvault(
+    client_addr: SocketAddr,
+    vault_outpoint: OutPoint,
+    vault_amount: Amount,
+    destination_addr: String,
+    timelock_blocks: u32,
+    recovery_addr: String,
+) -> Result<shared::VaultUnvaultResp, reqwest::Error> {
+    use shared::VaultUnvaultReq;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/vault/unvault", client_addr);
+    println!("Calling client at: {}", url);
+
+    let body = VaultUnvaultReq {
+        vault_outpoint: vault_outpoint.to_string(),
+        destination_addr,
+        amount: vault_amount.to_sat(),
+        timelock_blocks,
+        recovery_addr,
+    };
+
+    println!("Request: {:?}", body);
+
+    let resp = client.post(url).json(&body).send().await?;
+    println!("Response status: {}", resp.status());
+
+    let j = resp.json::<shared::VaultUnvaultResp>().await?;
+    println!("Unvault response: {:?}", j);
+
+    Ok(j)
 }

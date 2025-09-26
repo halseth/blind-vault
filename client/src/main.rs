@@ -5,12 +5,13 @@ use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::psbt::Input;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{Secp256k1, All, XOnlyPublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::{
     Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
     Witness, absolute, consensus, taproot, transaction,
 };
+use bitcoin::address::script_pubkey::ScriptBufExt;
 use clap::Parser;
 use hex::ToHex;
 use musig2::secp::{Point, MaybePoint, MaybeScalar, Scalar, G};
@@ -28,8 +29,8 @@ use std::fs;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::process::Command;
-use std::ptr::write;
 use std::str::FromStr;
+use std::ptr::write;
 use std::sync::Mutex;
 
 
@@ -102,7 +103,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .app_data(app_state.clone())
             .service(sign_vault)
-            //.service(sign_unvault)
+            .service(sign_unvault)
     })
     .bind(bind)?
     .run()
@@ -484,6 +485,68 @@ async fn sign_vault(
         deposit_psbt: deposit_psbt,
         spend_psbt: recovery_psbt,
     };
+    Ok(web::Json(resp))
+}
+
+#[post("/vault/unvault")]
+async fn sign_unvault(
+    data: web::Data<AppState>,
+    req: web::Json<VaultUnvaultReq>,
+) -> actix_web::Result<impl Responder> {
+    println!("Unvault request: {:?}", req);
+
+    let secp = Secp256k1::new();
+    let cfg = data.cfg.clone();
+
+    // Parse vault outpoint
+    let vault_outpoint = OutPoint::from_str(&req.vault_outpoint)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid vault outpoint: {}", e)))?;
+
+    // Parse destination and recovery addresses
+    let destination_addr = Address::from_str(&req.destination_addr)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid destination address: {}", e)))?
+        .assume_checked();
+
+    let recovery_addr = Address::from_str(&req.recovery_addr)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid recovery address: {}", e)))?
+        .assume_checked();
+
+    // Initialize signing sessions with signers
+    let sessions = init_signer_sessions(&cfg).await?;
+    let num_signers = sessions.len();
+
+    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
+    let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(&coeff_salt));
+
+    // Create the same aggregated key as the original vault
+    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
+    let pk = bitcoin::secp256k1::PublicKey::from_slice(&untweaked_aggregated_pubkey.serialize())
+        .unwrap();
+    let (xpub, _) = pk.x_only_public_key();
+
+    println!("Unvault aggregated pubkey: {}", xpub);
+
+    // Create the three transactions
+    let unvault_psbt = create_unvault_transaction(&req, &secp, xpub)?;
+    let recovery_psbt = create_recovery_transaction(&req, &unvault_psbt, &recovery_addr)?;
+    let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt, &destination_addr)?;
+
+    // TODO: Get signatures from signers for all three transactions
+    // This would use request_unvault_signatures() to get blind signatures
+
+    println!("Created unvault transactions:");
+    println!("Unvault PSBT: {:?}", unvault_psbt.unsigned_tx);
+    println!("Recovery PSBT: {:?}", recovery_psbt.unsigned_tx);
+    println!("Final spend PSBT: {:?}", final_spend_psbt.unsigned_tx);
+
+    let resp = VaultUnvaultResp {
+        unvault_psbt,
+        recovery_psbt,
+        final_spend_psbt,
+        unvault_pubkey: xpub.to_string(),
+    };
+
     Ok(web::Json(resp))
 }
 
@@ -1017,56 +1080,119 @@ fn create_p2tr_address(pubkey: &Point) -> Address {
     )
 }
 
-// Helper function to create recovery transaction
-fn create_recovery_transaction(
-    deposit_psbt: &Psbt, 
-    recovery_addr: &str
-) -> actix_web::Result<Psbt> {
-    // This would create a transaction that spends the deposit output to the recovery address
-    // For now, return a placeholder - this needs proper PSBT construction
-    let mut recovery_psbt = deposit_psbt.clone();
-    
-    // Update to spend to recovery address
-    if let Some(output) = recovery_psbt.unsigned_tx.output.get_mut(0) {
-        let recovery_address = Address::from_str(recovery_addr)
-            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid recovery address: {}", e)))?
-            .require_network(Network::Signet)
-            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Wrong network for recovery address: {}", e)))?;
-        output.script_pubkey = recovery_address.script_pubkey();
-    }
-    
-    Ok(recovery_psbt)
-}
 
 // Helper function to create unvault transaction
-fn create_unvault_transaction(req: &VaultUnvaultReq) -> actix_web::Result<Psbt> {
-    // This would create the unvault transaction with timelock and script fallback
-    // For now, return a placeholder PSBT
+fn create_unvault_transaction(
+    req: &VaultUnvaultReq,
+    secp: &Secp256k1<All>,
+    unvault_pubkey: XOnlyPublicKey
+) -> actix_web::Result<Psbt> {
+    use bitcoin::ScriptBuf;
+
+    // Parse the vault outpoint
+    let vault_outpoint = OutPoint::from_str(&req.vault_outpoint)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid vault outpoint: {}", e)))?;
+
+    // Create input spending from vault
+    let input = TxIn {
+        previous_output: vault_outpoint,
+        script_sig: ScriptBuf::default(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Witness::default(),
+    };
+
+    // Create output with same pubkey (unvault output)
+    let unvault_script = ScriptBuf::new_p2tr(secp, unvault_pubkey, None);
+    let output = TxOut {
+        value: Amount::from_sat(req.amount).map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?,
+        script_pubkey: unvault_script,
+    };
+
     let tx = Transaction {
         version: transaction::Version::TWO,
         lock_time: absolute::LockTime::ZERO,
-        input: vec![],
-        output: vec![],
+        input: vec![input],
+        output: vec![output],
     };
-    
+
     Ok(Psbt::from_unsigned_tx(tx)
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
 }
 
-// Helper function to create final spend transaction  
+// Helper function to create recovery transaction
+fn create_recovery_transaction(
+    req: &VaultUnvaultReq,
+    unvault_psbt: &Psbt,
+    recovery_addr: &Address
+) -> actix_web::Result<Psbt> {
+    use bitcoin::ScriptBuf;
+
+    // Create input spending from unvault output
+    let unvault_tx = &unvault_psbt.unsigned_tx;
+    let unvault_outpoint = OutPoint {
+        txid: unvault_tx.compute_txid(),
+        vout: 0, // First output is the unvault output
+    };
+
+    let input = TxIn {
+        previous_output: unvault_outpoint,
+        script_sig: ScriptBuf::default(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Witness::default(),
+    };
+
+    // Create output to recovery address
+    let output = TxOut {
+        value: Amount::from_sat(req.amount).map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
+        script_pubkey: recovery_addr.script_pubkey(),
+    };
+
+    let tx = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO, // Recovery can be immediate
+        input: vec![input],
+        output: vec![output],
+    };
+
+    Ok(Psbt::from_unsigned_tx(tx)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
+}
+
+// Helper function to create final spend transaction
 fn create_final_spend_transaction(
     req: &VaultUnvaultReq,
-    unvault_psbt: &Psbt
+    unvault_psbt: &Psbt,
+    destination_addr: &Address
 ) -> actix_web::Result<Psbt> {
-    // This would create the timelocked spend transaction
-    // For now, return a placeholder PSBT
+    use bitcoin::ScriptBuf;
+
+    // Create input spending from unvault output
+    let unvault_tx = &unvault_psbt.unsigned_tx;
+    let unvault_outpoint = OutPoint {
+        txid: unvault_tx.compute_txid(),
+        vout: 0, // First output is the unvault output
+    };
+
+    let input = TxIn {
+        previous_output: unvault_outpoint,
+        script_sig: ScriptBuf::default(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Witness::default(),
+    };
+
+    // Create output to destination address
+    let output = TxOut {
+        value: Amount::from_sat(req.amount).map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
+        script_pubkey: destination_addr.script_pubkey(),
+    };
+
     let tx = Transaction {
         version: transaction::Version::TWO,
         lock_time: absolute::LockTime::from_height(req.timelock_blocks).unwrap(),
-        input: vec![],
-        output: vec![],
+        input: vec![input],
+        output: vec![output],
     };
-    
+
     Ok(Psbt::from_unsigned_tx(tx)
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
 }

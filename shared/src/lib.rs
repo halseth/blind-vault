@@ -59,11 +59,13 @@ pub struct VaultUnvaultReq {
     pub destination_addr: String,
     pub amount: u64,
     pub timelock_blocks: u32,
+    pub recovery_addr: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VaultUnvaultResp {
     pub unvault_psbt: Psbt,
+    pub recovery_psbt: Psbt,
     pub final_spend_psbt: Psbt,
     pub unvault_pubkey: String,
 }
