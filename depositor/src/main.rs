@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use bitcoin::address::script_pubkey::ScriptBufExt;
 use bitcoin::witness::WitnessExt;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use bitcoin::bip32::KeySource;
 use bitcoin::consensus_validation::TransactionExt;
@@ -33,53 +33,109 @@ fn gen_keypair<C: Signing>(secp: &Secp256k1<C>) -> Keypair {
 #[derive(Debug, Parser)]
 #[command(verbatim_doc_comment)]
 struct Args {
-    #[arg(long)]
-    prevout: OutPoint,
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    #[arg(long)]
-    prev_amt: Amount,
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Create a new vault deposit
+    Create {
+        #[arg(long)]
+        prevout: OutPoint,
 
-    #[arg(long)]
-    fallback_addr: String,
+        #[arg(long)]
+        prev_amt: Amount,
 
-    #[arg(long)]
-    recovery_addr: String,
+        #[arg(long)]
+        fallback_addr: String,
 
-    #[arg(long)]
-    output_amt: Amount,
+        #[arg(long)]
+        recovery_addr: String,
 
-    #[arg(long)]
-    change_addr: Option<String>,
+        #[arg(long)]
+        output_amt: Amount,
 
-    #[arg(long)]
-    change_amt: Option<Amount>,
+        #[arg(long)]
+        change_addr: Option<String>,
 
-    #[arg(long)]
-    client_url: Option<SocketAddr>,
+        #[arg(long)]
+        change_amt: Option<Amount>,
 
-    /// Sign the message using the given private key. Pass "new" to generate one at random. Leave
-    /// this blank if verifying a receipt.
-    #[arg(long)]
-    priv_key: Option<String>,
+        #[arg(long)]
+        client_url: Option<SocketAddr>,
 
-    /// Network to use.
-    #[arg(long, default_value_t = Network::Signet)]
-    network: Network,
+        /// Sign the message using the given private key. Pass "new" to generate one at random. Leave
+        /// this blank if verifying a receipt.
+        #[arg(long)]
+        priv_key: Option<String>,
+
+        /// Network to use.
+        #[arg(long, default_value_t = Network::Signet)]
+        network: Network,
+    },
+    /// Unvault an existing vault deposit
+    Unvault {
+        // TODO: Add unvault-specific arguments
+        /// Network to use.
+        #[arg(long, default_value_t = Network::Signet)]
+        network: Network,
+    },
 }
 
 #[tokio::main]
 async fn main() {
-    create_vault().await;
-}
-
-async fn create_vault() {
     let args = Args::parse();
 
+    match args.command {
+        Commands::Create {
+            prevout,
+            prev_amt,
+            fallback_addr,
+            recovery_addr,
+            output_amt,
+            change_addr,
+            change_amt,
+            client_url,
+            priv_key,
+            network
+        } => {
+            create_vault(
+                prevout,
+                prev_amt,
+                fallback_addr,
+                recovery_addr,
+                output_amt,
+                change_addr,
+                change_amt,
+                client_url,
+                priv_key,
+                network
+            ).await;
+        }
+        Commands::Unvault { network } => {
+            unvault(network).await;
+        }
+    }
+}
+
+async fn create_vault(
+    prevout: OutPoint,
+    prev_amt: Amount,
+    fallback_addr: String,
+    recovery_addr: String,
+    output_amt: Amount,
+    change_addr: Option<String>,
+    change_amt: Option<Amount>,
+    client_url: Option<SocketAddr>,
+    priv_key: Option<String>,
+    network: Network,
+) {
+
     let secp = Secp256k1::new();
-    let network = args.network;
 
     // Generate a new keypair or use the given private key.
-    let (keypair, script_pub) = match args.priv_key.as_deref() {
+    let (keypair, script_pub) = match priv_key.as_deref() {
         Some(priv_str) => {
             let keypair = if priv_str == "new" {
                 gen_keypair(&secp)
@@ -108,10 +164,10 @@ async fn create_vault() {
     };
 
     //    // Address the presigned tx will send coins to.
-    let fallback_addr = parse_address(&args.fallback_addr, args.network);
+    let fallback_addr = parse_address(&fallback_addr, network);
 
     let deposit_prevout = TxOut {
-        value: args.prev_amt,
+        value: prev_amt,
         script_pubkey: script_pub,
     };
 
@@ -123,7 +179,7 @@ async fn create_vault() {
 
     // Input to deposit.
     let input = TxIn {
-        previous_output: args.prevout,
+        previous_output: prevout,
         script_sig: ScriptBuf::default(),
         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
         witness: Witness::default(),
@@ -132,17 +188,17 @@ async fn create_vault() {
     // The output the deposit will go into. Note that the output script is not yet determined at
     // this point.
     let deposit_output = TxOut {
-        value: args.output_amt,
+        value: output_amt,
         script_pubkey: ScriptBuf::default(),
     };
 
     // The change output is locked to a key controlled by us.
-    let change = match args.change_addr {
+    let change = match change_addr {
         None => None,
         Some(addr) => {
-            let a = parse_address(&addr, args.network);
+            let a = parse_address(&addr, network);
             Some(TxOut {
-                value: args.change_amt.unwrap(),
+                value: change_amt.unwrap(),
                 script_pubkey: a.script_pubkey(),
             })
         }
@@ -167,7 +223,7 @@ async fn create_vault() {
     let psbt = Psbt::from_unsigned_tx(unsigned_tx).expect("Could not create PSBT");
 
     // Use the new vault deposit flow
-    let resp = initiate_vault_deposit(args.client_url.unwrap(), &psbt, args.recovery_addr.clone())
+    let resp = initiate_vault_deposit(client_url.unwrap(), &psbt, recovery_addr.clone())
         .await
         .unwrap();
 
@@ -186,7 +242,7 @@ async fn create_vault() {
 
     let mut key_map: HashMap<bitcoin::XOnlyPublicKey, PrivateKey> = HashMap::new();
     let (xpub, _) = keypair.x_only_public_key();
-    let sk = PrivateKey::new(keypair.secret_key(), args.network);
+    let sk = PrivateKey::new(keypair.secret_key(), network);
     key_map.insert(xpub, sk);
 
     let mut deposit_origin_input = BTreeMap::new();
@@ -265,4 +321,10 @@ async fn initiate_vault_deposit(
     println!("{j:#?}");
 
     Ok(j)
+}
+
+async fn unvault(network: Network) {
+    println!("Unvault functionality not yet implemented");
+    println!("Network: {}", network);
+    // TODO: Implement unvault logic
 }
