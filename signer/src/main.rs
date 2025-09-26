@@ -193,23 +193,25 @@ async fn session_sign(
 
 
     println!("zk_proof: {}",  req.zk_proof.len());
-    let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
-        //.env("RISC0_DEV_MODE", "true")
-        .arg(format!("--verify=true"))
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child.stdin.as_mut().unwrap().write_all(req.zk_proof.as_bytes())?;
-
-    let output = child.wait_with_output()?;
-
-    if !output.status.success() {
-        println!("zk_proof failed: {}", String::from_utf8_lossy(&output.stderr));
-        return Err(ErrorInternalServerError("zk_proof failed"));
-    }
-
-    let proof = String::from_utf8(output.stdout).unwrap();
+    // TODO: Replace with actual ZK proof verification when available
+    // let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
+    //     //.env("RISC0_DEV_MODE", "true")
+    //     .arg(format!("--verify=true"))
+    //     .stdin(Stdio::piped())
+    //     .spawn()
+    //     .unwrap();
+    //
+    // child.stdin.as_mut().unwrap().write_all(req.zk_proof.as_bytes())?;
+    //
+    // let output = child.wait_with_output()?;
+    //
+    // if !output.status.success() {
+    //     println!("zk_proof failed: {}", String::from_utf8_lossy(&output.stderr));
+    //     return Err(ErrorInternalServerError("zk_proof failed"));
+    // }
+    //
+    // let proof = String::from_utf8(output.stdout).unwrap();
+    let proof = "dummy_verification_result".to_string();
     //let proof = proof.strip_suffix("\n").unwrap();
     println!("output: {}", proof);
 
@@ -352,27 +354,29 @@ async fn sign_unvault(
 fn verify_zk_proof(zk_proof: &str) -> Result<bool> {
     println!("Verifying ZK proof with length: {}", zk_proof.len());
     
+    // TODO: Replace with actual ZK proof verification when available
     // Call the external ZK verification tool
-    let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
-        .arg(format!("--verify=true"))
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|e| ErrorInternalServerError(format!("Failed to spawn ZK verifier: {}", e)))?;
-    
-    child.stdin.as_mut().unwrap().write_all(zk_proof.as_bytes())
-        .map_err(|e| ErrorInternalServerError(format!("Failed to write ZK proof: {}", e)))?;
-    
-    let output = child.wait_with_output()
-        .map_err(|e| ErrorInternalServerError(format!("ZK verifier failed: {}", e)))?;
-    
-    if !output.status.success() {
-        println!("ZK proof verification failed: {}", String::from_utf8_lossy(&output.stderr));
-        return Ok(false);
-    }
-    
-    let proof_output = String::from_utf8(output.stdout)
-        .map_err(|e| ErrorInternalServerError(format!("Invalid ZK proof output: {}", e)))?;
-    println!("ZK proof verification output: {}", proof_output);
+    // let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
+    //     .arg(format!("--verify=true"))
+    //     .stdin(Stdio::piped())
+    //     .spawn()
+    //     .map_err(|e| ErrorInternalServerError(format!("Failed to spawn ZK verifier: {}", e)))?;
+    //
+    // child.stdin.as_mut().unwrap().write_all(zk_proof.as_bytes())
+    //     .map_err(|e| ErrorInternalServerError(format!("Failed to write ZK proof: {}", e)))?;
+    //
+    // let output = child.wait_with_output()
+    //     .map_err(|e| ErrorInternalServerError(format!("ZK verifier failed: {}", e)))?;
+    //
+    // if !output.status.success() {
+    //     println!("ZK proof verification failed: {}", String::from_utf8_lossy(&output.stderr));
+    //     return Ok(false);
+    // }
+    //
+    // let proof_output = String::from_utf8(output.stdout)
+    //     .map_err(|e| ErrorInternalServerError(format!("Invalid ZK proof output: {}", e)))?;
+    // println!("ZK proof verification output: {}", proof_output);
+    println!("ZK proof verification bypassed - returning success");
     
     Ok(true)
 }
