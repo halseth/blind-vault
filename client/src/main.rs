@@ -260,10 +260,9 @@ fn dummy_unspent_transaction_outputs() -> Vec<(OutPoint, TxOut)> {
 #[post("/vault")]
 async fn sign_vault(
     data: web::Data<AppState>,
-    //id: web::Path<String>,
-    req: web::Json<SignPsbtReq>,
+    req: web::Json<VaultDepositReq>,
 ) -> actix_web::Result<impl Responder> {
-    println!("req: {:?}", req);
+    println!("Vault deposit request: {:?}", req);
 
     let secp = Secp256k1::new();
 
@@ -290,7 +289,7 @@ async fn sign_vault(
     let tap = Address::p2tr(&secp, xpub, None, Mainnet);
     let sp = tap.script_pubkey();
 
-    let mut deposit_psbt = req.psbt.clone();
+    let mut deposit_psbt = req.deposit_psbt.clone();
     if let Some(output) = deposit_psbt.unsigned_tx.output.get_mut(0) {
         output.script_pubkey = sp.clone();
     }
@@ -320,7 +319,7 @@ async fn sign_vault(
         witness: Witness::default(),
     };
 
-    let spend_script_pubkey = Address::from_str(&req.fallback_addr)
+    let spend_script_pubkey = Address::from_str(&req.recovery_addr)
         .unwrap()
         .require_network(args.network)
         .unwrap()
@@ -481,9 +480,10 @@ async fn sign_vault(
     //});
 
 
-    let resp = SignPsbtResp {
+    let resp = VaultDepositResp {
         deposit_psbt: deposit_psbt,
-        spend_psbt: recovery_psbt,
+        recovery_psbt: recovery_psbt,
+        vault_pubkey: hex::encode(xpub.serialize()),
     };
     Ok(web::Json(resp))
 }
@@ -935,13 +935,15 @@ async fn request_partial_sigs(
 
         println!("params: {}", serde_json::to_string(&zk_params).unwrap());
 
-        let output = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
-            //.env("RISC0_DEV_MODE", "true")
-            .arg(format!("--prove={}", serde_json::to_string(&zk_params).unwrap()))
-            .output()?;
-
-        let proof = String::from_utf8(output.stdout).unwrap();
-        let proof = proof.strip_suffix("\n").unwrap();
+        // TODO: Replace with actual ZK proof generation when available
+        // let output = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
+        //     //.env("RISC0_DEV_MODE", "true")
+        //     .arg(format!("--prove={}", serde_json::to_string(&zk_params).unwrap()))
+        //     .output()?;
+        //
+        // let proof = String::from_utf8(output.stdout).unwrap();
+        // let proof = proof.strip_suffix("\n").unwrap();
+        let proof = "dummy_zk_proof";
         //println!("output: {}", proof);
         fs::write("receipt.txt", proof).expect("Should be able to write to `/foo/tmp`");
 
@@ -965,6 +967,15 @@ async fn request_partial_sigs(
         // println!("body_json: {}", body_json);
         let resp = client.post(url).json(&body).send().await?;
         println!("{resp:#?}");
+        let status = resp.status();
+        println!("Response status: {}", status);
+
+        if !status.is_success() {
+            let error_body = resp.text().await?;
+            println!("Error response body: {}", error_body);
+            return Err(format!("Signer returned error: {} - {}", status, error_body).into());
+        }
+
         let j = resp.json::<SignResp>().await?;
         println!("{j:#?}");
 
