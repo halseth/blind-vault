@@ -173,7 +173,8 @@ async fn session_sign(
             // 2) Recovery transaction spending from the unvault transaction output back to the same recovery address
             // 3) Final timelocked transaction spending from the unvault transaction output
         },
-       _ => {
+       t => {
+           println!("type {} not found", t);
             return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into());
         },
     }

@@ -401,7 +401,7 @@ async fn sign_vault(
         &pubkeys,
         &public_nonces,
         &coeff_salt,
-        "RECOVERY", // Legacy PSBT signing for recovery transactions
+        "VAULT", 
     )
         .await?;
 
