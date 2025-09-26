@@ -246,13 +246,11 @@ async fn session_sign(
                     },
                     "VAULT" => {
                         // Vault pubkey would be extracted from aggregation process
-                        s.vault_pubkey = Some("vault_aggregated_key".to_string());
+                        // No additional storage needed for this session
                     },
                     "UNVAULT" => {
-                        // Store the derived unvault pubkey
-                        if let Ok(unvault_pk) = derive_unvault_pubkey(&s.secret_key) {
-                            s.unvault_pubkey = Some(hex::encode(unvault_pk.serialize()));
-                        }
+                        // For unvault transactions, we use the same key validation
+                        // No additional storage needed for this session
                     },
                     _ => {}
                 }
