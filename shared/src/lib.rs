@@ -39,18 +39,6 @@ pub struct VaultDepositResp {
     pub vault_pubkey: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct RecoverySignReq {
-    pub session_id: String,
-    pub recovery_psbt: Psbt,
-    pub zk_proof: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct RecoverySignResp {
-    pub session_id: String,
-    pub signed_recovery_psbt: Psbt,
-}
 
 // Vault unvault flow types
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -70,30 +58,4 @@ pub struct VaultUnvaultResp {
     pub unvault_pubkey: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UnvaultSignReq {
-    pub session_id: String,
-    pub unvault_psbt: Psbt,
-    pub final_spend_psbt: Psbt,
-    pub zk_proof: String,
-}
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UnvaultSignResp {
-    pub session_id: String,
-    pub signed_unvault_psbt: Psbt,
-    pub signed_final_spend_psbt: Psbt,
-}
-
-// Legacy types for backward compatibility
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SignPsbtReq {
-    pub psbt: Psbt,
-    pub fallback_addr: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SignPsbtResp {
-    pub deposit_psbt: Psbt,
-    pub spend_psbt: Psbt,
-}

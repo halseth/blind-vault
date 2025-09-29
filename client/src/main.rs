@@ -23,7 +23,7 @@ use rand::Rng;
 use secp256k1::{PublicKey, SecretKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shared::{InitResp, SignPsbtReq, SignPsbtResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, RecoverySignReq, RecoverySignResp, VaultUnvaultReq, VaultUnvaultResp, UnvaultSignReq, UnvaultSignResp};
+use shared::{InitResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, VaultUnvaultReq, VaultUnvaultResp};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::fs::File;
@@ -985,6 +985,7 @@ async fn request_partial_sigs(
     Ok(partial_signatures)
 }
 
+#[derive(Debug, Clone)]
 struct BlindingFactors {
     alpha: Scalar,
     beta: Scalar,
@@ -1239,7 +1240,7 @@ async fn request_unvault_signatures(
     sessions: &[SigningSession],
     key_agg_ctx: &KeyAggContext,
     blinding_factors: &[BlindingFactors],
-    pubkeys: &[PublicKey], 
+    pubkeys: &[PublicKey],
     public_nonces: &[PubNonce],
     coeff_salt: &[u8],
     unvault_psbt: Psbt,
@@ -1248,16 +1249,16 @@ async fn request_unvault_signatures(
     // This would implement the blind signing protocol for unvault transactions
     // For now, return the unsigned PSBTs
     // In a real implementation, this would:
-    // 1. Extract sighashes from both PSBTs 
+    // 1. Extract sighashes from both PSBTs
     // 2. Call request_partial_sigs with "UNVAULT" for the first transaction
     // 3. Call request_partial_sigs with "FINAL" for the second transaction
     // 4. Aggregate the partial signatures for both transactions
     // 5. Return the fully signed PSBTs
-    
+
     println!("Requesting unvault signatures for unvault and final spend transactions");
-    
+
     // TODO: Extract messages/sighashes from both PSBTs and call request_partial_sigs
     // with appropriate transaction types ("UNVAULT" and "FINAL")
-    
+
     Ok((unvault_psbt, final_spend_psbt))
 }
