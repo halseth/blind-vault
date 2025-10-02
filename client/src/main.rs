@@ -49,6 +49,10 @@ struct Args {
     /// Network to use.
     #[arg(long, default_value_t = Network::Signet)]
     network: Network,
+
+    // subtract static fee. TODO: use anchor instead?
+    #[arg(long)]
+    static_fee: Amount,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -325,7 +329,7 @@ async fn sign_vault(
         .unwrap()
         .script_pubkey();
 
-    let spend_out_amt = utxos[0].value - Amount::from_sat(500).unwrap(); // subtract static fee. TODO: use anchor instead?
+    let spend_out_amt = utxos[0].value - args.static_fee; // subtract static fee. TODO: use anchor instead?
     let spend_output = TxOut {
         value: spend_out_amt.unwrap(),
         script_pubkey: spend_script_pubkey.clone(),
