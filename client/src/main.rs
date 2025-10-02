@@ -1,20 +1,20 @@
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::KnownHrp::Mainnet;
+use bitcoin::address::script_pubkey::ScriptBufExt;
 use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
 use bitcoin::psbt::Input;
-use bitcoin::secp256k1::{Secp256k1, All, XOnlyPublicKey};
+use bitcoin::secp256k1::{All, Secp256k1, XOnlyPublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::{
     Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
     Witness, absolute, consensus, taproot, transaction,
 };
-use bitcoin::address::script_pubkey::ScriptBufExt;
 use clap::Parser;
 use hex::ToHex;
-use musig2::secp::{Point, MaybePoint, MaybeScalar, Scalar, G};
+use musig2::secp::{G, MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
     AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce, compute_challenge_hash_tweak,
     verify_partial_challenge,
@@ -23,16 +23,18 @@ use rand::Rng;
 use secp256k1::{PublicKey, SecretKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shared::{InitResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, VaultUnvaultReq, VaultUnvaultResp};
+use shared::{
+    InitResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, VaultUnvaultReq,
+    VaultUnvaultResp,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::process::Command;
-use std::str::FromStr;
 use std::ptr::write;
+use std::str::FromStr;
 use std::sync::Mutex;
-
 
 #[derive(Debug, Parser)]
 #[command(verbatim_doc_comment)]
@@ -250,9 +252,9 @@ async fn sign_vault(
         &pubkeys,
         &public_nonces,
         &coeff_salt,
-        "VAULT", 
+        "VAULT",
     )
-        .await?;
+    .await?;
 
     verify_partial_sigs(
         &public_nonces,
@@ -328,7 +330,6 @@ async fn sign_vault(
     //        .insert(s.session_id, session_data);
     //});
 
-
     let resp = VaultDepositResp {
         deposit_psbt: deposit_psbt,
         recovery_psbt: recovery_psbt,
@@ -353,7 +354,9 @@ async fn sign_unvault(
 
     // Parse destination and recovery addresses
     let destination_addr = Address::from_str(&req.destination_addr)
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid destination address: {}", e)))?
+        .map_err(|e| {
+            actix_web::error::ErrorBadRequest(format!("Invalid destination address: {}", e))
+        })?
         .assume_checked();
 
     let recovery_addr = Address::from_str(&req.recovery_addr)
@@ -677,7 +680,7 @@ fn aggregate_pubs(
         .iter()
         .map(|session| {
             let resp = session.init_resp.clone();
-            let pk =  parse_pubkey(resp.pubkey.as_str());
+            let pk = parse_pubkey(resp.pubkey.as_str());
             //println!("pk: {}", pk);
             let pn = PubNonce::from_hex(resp.pubnonce.as_str()).unwrap();
             (pk, pn)
@@ -706,29 +709,27 @@ fn parse_pubkey(pub_str: &str) -> PublicKey {
     pk
 }
 
-
 // Helper function to create P2TR address from a Point
 fn create_p2tr_address(pubkey: &Point) -> Address {
-    use bitcoin::key::TweakedPublicKey;
     use bitcoin::XOnlyPublicKey;
-    
+    use bitcoin::key::TweakedPublicKey;
+
     // Convert Point to XOnlyPublicKey
-    let xonly_pubkey = XOnlyPublicKey::from_slice(&pubkey.serialize_xonly())
-        .expect("Valid x-only public key");
-    
+    let xonly_pubkey =
+        XOnlyPublicKey::from_slice(&pubkey.serialize_xonly()).expect("Valid x-only public key");
+
     // Create P2TR address (taproot)
     Address::p2tr_tweaked(
         TweakedPublicKey::dangerous_assume_tweaked(xonly_pubkey),
-        Network::Signet
+        Network::Signet,
     )
 }
-
 
 // Helper function to create unvault transaction
 fn create_unvault_transaction(
     req: &VaultUnvaultReq,
     secp: &Secp256k1<All>,
-    unvault_pubkey: XOnlyPublicKey
+    unvault_pubkey: XOnlyPublicKey,
 ) -> actix_web::Result<Psbt> {
     use bitcoin::ScriptBuf;
 
@@ -747,7 +748,8 @@ fn create_unvault_transaction(
     // Create output with same pubkey (unvault output)
     let unvault_script = ScriptBuf::new_p2tr(secp, unvault_pubkey, None);
     let output = TxOut {
-        value: Amount::from_sat(req.amount).map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?,
+        value: Amount::from_sat(req.amount)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?,
         script_pubkey: unvault_script,
     };
 
@@ -758,15 +760,16 @@ fn create_unvault_transaction(
         output: vec![output],
     };
 
-    Ok(Psbt::from_unsigned_tx(tx)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
+    Ok(Psbt::from_unsigned_tx(tx).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
+    })?)
 }
 
 // Helper function to create recovery transaction
 fn create_recovery_transaction(
     req: &VaultUnvaultReq,
     unvault_psbt: &Psbt,
-    recovery_addr: &Address
+    recovery_addr: &Address,
 ) -> actix_web::Result<Psbt> {
     use bitcoin::ScriptBuf;
 
@@ -786,7 +789,8 @@ fn create_recovery_transaction(
 
     // Create output to recovery address
     let output = TxOut {
-        value: Amount::from_sat(req.amount).map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
+        value: Amount::from_sat(req.amount)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
         script_pubkey: recovery_addr.script_pubkey(),
     };
 
@@ -797,15 +801,16 @@ fn create_recovery_transaction(
         output: vec![output],
     };
 
-    Ok(Psbt::from_unsigned_tx(tx)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
+    Ok(Psbt::from_unsigned_tx(tx).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
+    })?)
 }
 
 // Helper function to create final spend transaction
 fn create_final_spend_transaction(
     req: &VaultUnvaultReq,
     unvault_psbt: &Psbt,
-    destination_addr: &Address
+    destination_addr: &Address,
 ) -> actix_web::Result<Psbt> {
     use bitcoin::ScriptBuf;
 
@@ -825,7 +830,8 @@ fn create_final_spend_transaction(
 
     // Create output to destination address
     let output = TxOut {
-        value: Amount::from_sat(req.amount).map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
+        value: Amount::from_sat(req.amount)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
         script_pubkey: destination_addr.script_pubkey(),
     };
 
@@ -836,15 +842,16 @@ fn create_final_spend_transaction(
         output: vec![output],
     };
 
-    Ok(Psbt::from_unsigned_tx(tx)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e)))?)
+    Ok(Psbt::from_unsigned_tx(tx).map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
+    })?)
 }
 
 // Helper function to request recovery signatures from signers
 async fn request_recovery_signatures(
     sessions: &[SigningSession],
     key_agg_ctx: &KeyAggContext,
-    blinding_factors: &[BlindingFactors], 
+    blinding_factors: &[BlindingFactors],
     pubkeys: &[PublicKey],
     public_nonces: &[PubNonce],
     coeff_salt: &[u8],
@@ -857,12 +864,12 @@ async fn request_recovery_signatures(
     // 2. Call request_partial_sigs with "RECOVERY" transaction type
     // 3. Aggregate the partial signatures
     // 4. Return the fully signed recovery PSBT
-    
+
     println!("Requesting recovery signatures for vault deposit");
-    
+
     // TODO: Extract message/sighash from recovery PSBT and call request_partial_sigs
     // with "RECOVERY" transaction type once PSBT signing is fully integrated
-    
+
     Ok(recovery_psbt)
 }
 
