@@ -286,7 +286,7 @@ async fn sign_vault(
     let (xpub, _) = pk.x_only_public_key();
     println!("agg pubkey: {} x-only:{}", pk, xpub);
 
-    let tap = Address::p2tr(&secp, xpub, None, Mainnet);
+    let tap = Address::p2tr(&secp, xpub, None, args.network);
     let sp = tap.script_pubkey();
 
     let mut deposit_psbt = req.deposit_psbt.clone();
