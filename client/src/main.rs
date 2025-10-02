@@ -43,9 +43,6 @@ struct Args {
     #[arg(long)]
     listen: SocketAddr,
 
-    #[arg(long)]
-    server: bool,
-
     /// Network to use.
     #[arg(long, default_value_t = Network::Signet)]
     network: Network,
@@ -88,11 +85,6 @@ async fn main() -> std::io::Result<()> {
     let cfg: Config = serde_json::from_str(&args.cfg.unwrap()).unwrap();
     println!("config: {:?}", cfg);
 
-    if !args.server {
-        run_example(cfg).await.unwrap();
-        return Ok(());
-    }
-
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     let bind = args.listen;
@@ -114,153 +106,6 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-async fn run_example(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
-    let secp = Secp256k1::new();
-    let message = "hello interwebz!";
-
-    let sessions = init_signer_sessions(&cfg).await?;
-    let num_signers = sessions.len();
-    println!("num signers: {}", num_signers);
-    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
-
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt));
-
-    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
-    println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
-    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
-
-    let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
-    let bbs: MaybePoint = blinding_factors
-        .iter()
-        .enumerate()
-        .map(|(i, fac)| {
-            let pubkey: Point = pubkeys[i].into();
-            fac.beta * pubkey
-        })
-        .sum();
-
-    let ggs: MaybePoint = blinding_factors
-        .iter()
-        .enumerate()
-        .map(|(i, fac)| {
-            let nonce = public_nonces[i].clone();
-            fac.gamma * nonce.R2
-        })
-        .sum();
-
-    let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
-    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
-    let sign_nonce = agg_nonce + ggs + aas * G + bbs;
-
-    let adaptor_point = MaybePoint::Infinity;
-    let adapted_nonce = sign_nonce + adaptor_point;
-
-    let nonce_x_bytes = adapted_nonce.serialize_xonly();
-    let e: MaybeScalar =
-        compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
-
-    let partial_signatures = request_partial_sigs(
-        sessions,
-        &key_agg_ctx,
-        tweaked_aggregated_pubkey,
-        &blinding_factors,
-        sign_nonce,
-        b,
-        e,
-        message.to_string(),
-        &pubkeys,
-        &public_nonces,
-        &coeff_salt,
-        "VAULT", // This is a demo signing for vault creation
-    )
-    .await?;
-
-    verify_partial_sigs(
-        &public_nonces,
-        &key_agg_ctx,
-        tweaked_aggregated_pubkey,
-        &blinding_factors,
-        sign_nonce,
-        b,
-        e,
-        &partial_signatures,
-    );
-
-    let unblinded_sigs = unblind_partial_sigs(&blinding_factors, sign_nonce, partial_signatures);
-
-    let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
-
-    musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
-        .expect("aggregated signature must be valid");
-
-    //let zk_params = Params {
-    //    coeff_salt: hex::encode(coeff_salt),
-    //    blinding_factors: blinding_factors
-    //        .iter()
-    //        .map(|fac| {
-    //            (
-    //                hex::encode(fac.alpha),
-    //                hex::encode(fac.beta),
-    //                hex::encode(fac.gamma),
-    //            )
-    //        })
-    //        .collect(),
-    //    pubkeys: pubkeys.iter().map(|pk| hex::encode(pk.to_encoded_point(false).as_bytes())).collect(),
-    //    pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
-    //    message: message.to_string(),
-    //    signer_index: 0,
-    //};
-
-    //println!("params: {}", serde_json::to_string(&zk_params).unwrap());
-
-    Ok(())
-}
-const XPRIV: &str = "xprv9tuogRdb5YTgcL3P8Waj7REqDuQx4sXcodQaWTtEVFEp6yRKh1CjrWfXChnhgHeLDuXxo2auDZegMiVMGGxwxcrb2PmiGyCngLxvLeGsZRq";
-const BIP86_DERIVATION_PATH: &str = "m/86'/0'/0'";
-const MASTER_FINGERPRINT: &str = "9680603f";
-
-fn dummy_unspent_transaction_outputs() -> Vec<(OutPoint, TxOut)> {
-    let DUMMY_UTXO_AMOUNT_INPUT_1: Amount = Amount::from_sat(20_000_000).unwrap();
-    let DUMMY_UTXO_AMOUNT_INPUT_2: Amount = Amount::from_sat(10_000_000).unwrap();
-    let SPEND_AMOUNT: Amount = Amount::from_sat(25_000_000).unwrap();
-    let CHANGE_AMOUNT: Amount = Amount::from_sat(4_990_000).unwrap(); // 10_000 sat fee.
-
-    let script_pubkey_1 =
-        Address::from_str("bc1p80lanj0xee8q667aqcnn0xchlykllfsz3gu5skfv9vjsytaujmdqtv52vu")
-            .unwrap()
-            .require_network(Network::Bitcoin)
-            .unwrap()
-            .script_pubkey();
-
-    let out_point_1 = OutPoint {
-        txid: Txid::COINBASE_PREVOUT,
-        vout: 0,
-    };
-
-    let utxo_1 = TxOut {
-        value: DUMMY_UTXO_AMOUNT_INPUT_1,
-        script_pubkey: script_pubkey_1,
-    };
-
-    let script_pubkey_2 =
-        Address::from_str("bc1pfd0jmmdnp278vppcw68tkkmquxtq50xchy7f6wdmjtjm7fgsr8dszdcqce")
-            .unwrap()
-            .require_network(Network::Bitcoin)
-            .unwrap()
-            .script_pubkey();
-
-    let out_point_2 = OutPoint {
-        txid: Txid::COINBASE_PREVOUT,
-        vout: 1,
-    };
-
-    let utxo_2 = TxOut {
-        value: DUMMY_UTXO_AMOUNT_INPUT_2,
-        script_pubkey: script_pubkey_2,
-    };
-    vec![(out_point_1, utxo_1), (out_point_2, utxo_2)]
-}
 #[post("/vault")]
 async fn sign_vault(
     data: web::Data<AppState>,
