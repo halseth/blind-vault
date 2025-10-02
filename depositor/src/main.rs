@@ -48,9 +48,6 @@ enum Commands {
         prev_amt: Amount,
 
         #[arg(long)]
-        fallback_addr: String,
-
-        #[arg(long)]
         recovery_addr: String,
 
         #[arg(long)]
@@ -114,7 +111,6 @@ async fn main() {
         Commands::Create {
             prevout,
             prev_amt,
-            fallback_addr,
             recovery_addr,
             output_amt,
             change_addr,
@@ -126,7 +122,6 @@ async fn main() {
             create_vault(
                 prevout,
                 prev_amt,
-                fallback_addr,
                 recovery_addr,
                 output_amt,
                 change_addr,
@@ -161,7 +156,6 @@ async fn main() {
 async fn create_vault(
     prevout: OutPoint,
     prev_amt: Amount,
-    fallback_addr: String,
     recovery_addr: String,
     output_amt: Amount,
     change_addr: Option<String>,
@@ -201,9 +195,6 @@ async fn create_vault(
             return;
         }
     };
-
-    //    // Address the presigned tx will send coins to.
-    let fallback_addr = parse_address(&fallback_addr, network);
 
     let deposit_prevout = TxOut {
         value: prev_amt,
