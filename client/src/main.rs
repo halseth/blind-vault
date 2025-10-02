@@ -1,26 +1,24 @@
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer, Responder, Result, post, web};
-use bitcoin::KnownHrp::Mainnet;
 use bitcoin::address::script_pubkey::ScriptBufExt;
 use bitcoin::consensus_validation::TransactionExt;
 use bitcoin::hashes::Hash;
-use bitcoin::hex::DisplayHex;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::{All, Secp256k1, XOnlyPublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::{
-    Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    Address, Amount, Network, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
     Witness, absolute, consensus, taproot, transaction,
 };
 use clap::Parser;
 use hex::ToHex;
 use musig2::secp::{G, MaybePoint, MaybeScalar, Point, Scalar};
 use musig2::{
-    AggNonce, KeyAggContext, PartialSignature, PubNonce, SecNonce, compute_challenge_hash_tweak,
+    AggNonce, KeyAggContext, PartialSignature, PubNonce, compute_challenge_hash_tweak,
     verify_partial_challenge,
 };
 use rand::Rng;
-use secp256k1::{PublicKey, SecretKey, schnorr};
+use secp256k1::{PublicKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{
@@ -29,10 +27,7 @@ use shared::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::fs::File;
 use std::net::SocketAddr;
-use std::process::Command;
-use std::ptr::write;
 use std::str::FromStr;
 use std::sync::Mutex;
 
