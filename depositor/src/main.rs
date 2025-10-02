@@ -217,7 +217,7 @@ async fn create_vault(
 
     // The output the deposit will go into. Note that the output script is not yet determined at
     // this point.
-    let deposit_output = TxOut {
+    let vault_output = TxOut {
         value: output_amt,
         script_pubkey: ScriptBuf::default(),
     };
@@ -235,8 +235,8 @@ async fn create_vault(
     };
 
     let outputs = match change {
-        None => vec![deposit_output],
-        Some(c) => vec![deposit_output, c],
+        None => vec![vault_output],
+        Some(c) => vec![vault_output, c],
     };
 
     // The transaction we want to sign and broadcast.
