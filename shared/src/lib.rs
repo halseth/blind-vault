@@ -36,7 +36,7 @@ pub struct VaultDepositReq {
 pub struct VaultDepositResp {
     pub deposit_psbt: Psbt,
     pub recovery_psbt: Psbt,
-    pub vault_pubkey: String,
+    pub vault_address: String,
 }
 
 

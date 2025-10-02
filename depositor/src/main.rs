@@ -258,7 +258,7 @@ async fn create_vault(
         .unwrap();
 
     println!("Vault deposit response: {:?}", resp);
-    println!("Vault pubkey: {}", resp.vault_pubkey);
+    println!("Vault address: {}", resp.vault_address);
 
     // Extract the pre-signed recovery transaction
     let recovery_tx = resp.recovery_psbt.extract_tx().expect("valid recovery tx");

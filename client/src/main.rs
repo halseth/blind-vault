@@ -129,10 +129,10 @@ async fn sign_vault(
 
     let pk = bitcoin::secp256k1::PublicKey::from_slice(&untweaked_aggregated_pubkey.serialize())
         .unwrap();
-    let (xpub, _) = pk.x_only_public_key();
-    println!("agg pubkey: {} x-only:{}", pk, xpub);
+    let (xonly, _) = pk.x_only_public_key();
+    println!("agg pubkey: {} x-only:{}", pk, xonly);
 
-    let tap = Address::p2tr(&secp, xpub, None, args.network);
+    let tap = Address::p2tr(&secp, xonly, None, args.network);
     let sp = tap.script_pubkey();
 
     let mut deposit_psbt = req.deposit_psbt.clone();
@@ -328,7 +328,7 @@ async fn sign_vault(
     let resp = VaultDepositResp {
         deposit_psbt: deposit_psbt,
         recovery_psbt: recovery_psbt,
-        vault_pubkey: hex::encode(xpub.serialize()),
+        vault_address: tap.to_string(),
     };
     Ok(web::Json(resp))
 }
