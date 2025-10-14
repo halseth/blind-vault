@@ -20,7 +20,7 @@ $ cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --
 ### 3. Create a vault deposit:
 ```bash
 $ cd depositor/
-$ cargo run -- create --prevout "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:262" --prev-amt "0.00190943 BTC" --output-amt "0.0019 BTC" --client-url "127.0.0.1:8090" --priv-key "8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f" --fallback-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3"
+$ cargo run -- create --prevout "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:262" --prev-amt "0.00190943 BTC" --output-amt "0.0019 BTC" --client-url "127.0.0.1:8090" --priv-key "8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f" --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3"
 ```
 
 ### 4. Unvault funds from a vault:
