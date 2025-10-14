@@ -4,29 +4,74 @@ This is a Rust implementation of a Bitcoin vault system using blind co-signers t
 
 ## Usage
 
-### 1. Start the signer
+### Complete Example: Fund, Deposit, and Unvault
+
+This example walks through the full flow using the wallet tool to manage keys and fund a UTXO on signet.
+
+#### 0. Generate a key and fund it on signet
+
+```bash
+$ cd wallet/
+# Generate a new key (signet is the default)
+$ cargo run -- --new --network signet
+Generated new key:
+  Private key: 8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f
+  Public key:  a1b2c3d4...
+  Address:     tb1p...
+
+# Fund this address on signet using a faucet, then note the transaction:
+# - txid: e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32
+# - vout: 0
+# - amount: 0.00190943 BTC
+```
+
+#### 1. Start the signer
 
 ```bash
 $ cd signer/
 $ cargo run -- --listen="127.0.0.1:8080" --priv-key="c28a9f80738efe7b628cc2b68d7f8d2d6b5633ce8b0f3e7d3b6d8a9f8e2b9c1d"
 ```
 
-### 2. Start the client:
+#### 2. Start the client
+
 ```bash
 $ cd client/
 $ cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --static-fee "0.00000500 BTC"
 ```
 
-### 3. Create a vault deposit:
+#### 3. Create a vault deposit
+
+Use the funded UTXO from step 0:
+
 ```bash
 $ cd depositor/
-$ cargo run -- create --prevout "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:262" --prev-amt "0.00190943 BTC" --output-amt "0.0019 BTC" --client-url "127.0.0.1:8090" --priv-key "8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f" --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3"
+$ cargo run -- create \
+  --prevout "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:0" \
+  --prev-amt "0.00190943 BTC" \
+  --output-amt "0.0019 BTC" \
+  --client-url "127.0.0.1:8090" \
+  --priv-key "8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f" \
+  --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3"
+
+# This outputs:
+# - Raw deposit transaction (broadcast this to create the vault)
+# - Raw recovery transaction (pre-signed, can be used if needed)
+# - Vault address (the aggregated multisig address)
 ```
 
-### 4. Unvault funds from a vault:
+#### 4. Unvault funds from a vault
+
+After broadcasting the deposit transaction, use the vault outpoint:
+
 ```bash
 $ cd depositor/
-$ cargo run -- unvault --vault-outpoint "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:0" --vault-amount "0.001 BTC" --destination-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" --timelock-blocks 144 --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" --client-url "127.0.0.1:8090"
+$ cargo run -- unvault \
+  --vault-outpoint "<deposit_txid>:0" \
+  --vault-amount "0.0019 BTC" \
+  --destination-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" \
+  --timelock-blocks 144 \
+  --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" \
+  --client-url "127.0.0.1:8090"
 ```
 
 ## How It Works
