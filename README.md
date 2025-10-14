@@ -14,7 +14,7 @@ $ cargo run -- --listen="127.0.0.1:8080" --priv-key="c28a9f80738efe7b628cc2b68d7
 ### 2. Start the client:
 ```bash
 $ cd client/
-$ cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --server
+$ cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --static-fee "0.00000500 BTC"
 ```
 
 ### 3. Create a vault deposit:
