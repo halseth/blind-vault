@@ -342,6 +342,7 @@ async fn sign_unvault(
 
     let secp = Secp256k1::new();
     let cfg = data.cfg.clone();
+    let args = Args::parse();
 
     // Parse vault outpoint
     let vault_outpoint = OutPoint::from_str(&req.vault_outpoint)
@@ -375,9 +376,9 @@ async fn sign_unvault(
     println!("Unvault aggregated pubkey: {}", xpub);
 
     // Create the three transactions
-    let unvault_psbt = create_unvault_transaction(&req, &secp, xpub)?;
-    let recovery_psbt = create_recovery_transaction(&req, &unvault_psbt, &recovery_addr)?;
-    let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt, &destination_addr)?;
+    let unvault_psbt = create_unvault_transaction(&req, &secp, xpub, args.static_fee)?;
+    let recovery_psbt = create_recovery_transaction(&req, &unvault_psbt, &recovery_addr, args.static_fee)?;
+    let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt, &destination_addr, args.static_fee)?;
 
     // TODO: Get signatures from signers for all three transactions
     // This would use request_unvault_signatures() to get blind signatures
@@ -725,6 +726,7 @@ fn create_unvault_transaction(
     req: &VaultUnvaultReq,
     secp: &Secp256k1<All>,
     unvault_pubkey: XOnlyPublicKey,
+    static_fee: Amount,
 ) -> actix_web::Result<Psbt> {
     use bitcoin::ScriptBuf;
 
@@ -740,11 +742,16 @@ fn create_unvault_transaction(
         witness: Witness::default(),
     };
 
+    // Calculate output amount after fee
+    let input_amount = Amount::from_sat(req.amount)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?;
+    let output_amount = input_amount.checked_sub(static_fee)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Fee exceeds input amount"))?;
+
     // Create output with same pubkey (unvault output)
     let unvault_script = ScriptBuf::new_p2tr(secp, unvault_pubkey, None);
     let output = TxOut {
-        value: Amount::from_sat(req.amount)
-            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?,
+        value: output_amount,
         script_pubkey: unvault_script,
     };
 
@@ -775,6 +782,7 @@ fn create_recovery_transaction(
     req: &VaultUnvaultReq,
     unvault_psbt: &Psbt,
     recovery_addr: &Address,
+    static_fee: Amount,
 ) -> actix_web::Result<Psbt> {
     use bitcoin::ScriptBuf;
 
@@ -792,10 +800,14 @@ fn create_recovery_transaction(
         witness: Witness::default(),
     };
 
+    // Calculate output amount after fee (use unvault output amount, not original vault amount)
+    let unvault_output_amount = unvault_tx.output[0].value;
+    let output_amount = unvault_output_amount.checked_sub(static_fee)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Fee exceeds unvault output amount"))?;
+
     // Create output to recovery address
     let output = TxOut {
-        value: Amount::from_sat(req.amount)
-            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
+        value: output_amount,
         script_pubkey: recovery_addr.script_pubkey(),
     };
 
@@ -821,6 +833,7 @@ fn create_final_spend_transaction(
     req: &VaultUnvaultReq,
     unvault_psbt: &Psbt,
     destination_addr: &Address,
+    static_fee: Amount,
 ) -> actix_web::Result<Psbt> {
     use bitcoin::ScriptBuf;
 
@@ -838,10 +851,14 @@ fn create_final_spend_transaction(
         witness: Witness::default(),
     };
 
+    // Calculate output amount after fee (use unvault output amount, not original vault amount)
+    let unvault_output_amount = unvault_tx.output[0].value;
+    let output_amount = unvault_output_amount.checked_sub(static_fee)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Fee exceeds unvault output amount"))?;
+
     // Create output to destination address
     let output = TxOut {
-        value: Amount::from_sat(req.amount)
-            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?, // Use full amount for now (minus fees in real impl)
+        value: output_amount,
         script_pubkey: destination_addr.script_pubkey(),
     };
 
