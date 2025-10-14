@@ -755,9 +755,19 @@ fn create_unvault_transaction(
         output: vec![output],
     };
 
-    Ok(Psbt::from_unsigned_tx(tx).map_err(|e| {
+    let mut psbt = Psbt::from_unsigned_tx(tx).map_err(|e| {
         actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
-    })?)
+    })?;
+
+    // Add witness_utxo for the vault input
+    let vault_script = ScriptBuf::new_p2tr(secp, unvault_pubkey, None);
+    psbt.inputs[0].witness_utxo = Some(TxOut {
+        value: Amount::from_sat(req.amount)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?,
+        script_pubkey: vault_script,
+    });
+
+    Ok(psbt)
 }
 
 // Helper function to create recovery transaction
@@ -796,9 +806,14 @@ fn create_recovery_transaction(
         output: vec![output],
     };
 
-    Ok(Psbt::from_unsigned_tx(tx).map_err(|e| {
+    let mut psbt = Psbt::from_unsigned_tx(tx).map_err(|e| {
         actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
-    })?)
+    })?;
+
+    // Add witness_utxo for the unvault input
+    psbt.inputs[0].witness_utxo = Some(unvault_tx.output[0].clone());
+
+    Ok(psbt)
 }
 
 // Helper function to create final spend transaction
@@ -837,9 +852,14 @@ fn create_final_spend_transaction(
         output: vec![output],
     };
 
-    Ok(Psbt::from_unsigned_tx(tx).map_err(|e| {
+    let mut psbt = Psbt::from_unsigned_tx(tx).map_err(|e| {
         actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
-    })?)
+    })?;
+
+    // Add witness_utxo for the unvault input
+    psbt.inputs[0].witness_utxo = Some(unvault_tx.output[0].clone());
+
+    Ok(psbt)
 }
 
 // Helper function to request recovery signatures from signers
