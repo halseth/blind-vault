@@ -4,5 +4,7 @@
 /.idea
 /depositor/target
 /shared/target
+/wallet/target
 .DS_Store
 client/receipt.txt
+wallet/wallet.json

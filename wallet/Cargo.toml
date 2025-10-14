@@ -1,0 +1,12 @@
+[package]
+name = "wallet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitcoin = { git = "https://github.com/halseth/rust-bitcoin.git", rev = "da1d657", features = ["std", "rand-std", "serde", "bitcoinconsensus"] }
+clap = { version = "4.5.32", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.140"
+hex = "0.4.3"
+rand = "0.8.5"
