@@ -81,12 +81,13 @@ get_utxos() {
     local result=$(btc_cli scantxoutset start "[\"addr($address)\"]" 2>/dev/null)
 
     # Convert scantxoutset output to listunspent-compatible format
-    echo "$result" | jq '[.unspents[] | {
+    # Return empty array if no unspents found
+    echo "$result" | jq 'if .unspents then [.unspents[] | {
         txid: .txid,
         vout: .vout,
         amount: .amount,
         height: .height
-    }]'
+    }] else [] end'
 }
 
 broadcast_tx() {
@@ -184,9 +185,16 @@ cmd_fund() {
     # Get available UTXOs
     log_info "Querying bitcoind for available UTXOs..."
     local utxos=$(get_utxos "$address")
+
+    # Check if we got valid JSON
+    if ! echo "$utxos" | jq -e . >/dev/null 2>&1; then
+        log_error "Failed to query UTXOs from bitcoind"
+        exit 1
+    fi
+
     local utxo_count=$(echo "$utxos" | jq 'length')
 
-    if [ "$utxo_count" -eq 0 ]; then
+    if [ "$utxo_count" -eq 0 ] || [ -z "$utxo_count" ]; then
         log_error "No UTXOs found for address $address"
         log_info "Fund this address with: $BITCOIN_CLI $BITCOIN_CLI_ARGS sendtoaddress $address 0.001"
         exit 1
