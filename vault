@@ -147,20 +147,22 @@ update_vault_status() {
 # Wallet functions
 get_wallet_key() {
     cd wallet
-    local output=$(cargo run --quiet 2>/dev/null | tail -5)
+    local output=$(cargo run --quiet 2>/dev/null)
     cd ..
 
-    # Extract the first key's address and public key
+    # Extract the first key's address, public key, and private key
+    # Wallet output has groups of 3 lines: Private key, Public key, Address
     local address=$(echo "$output" | grep "Address:" | head -1 | awk '{print $2}')
     local pubkey=$(echo "$output" | grep "Public key:" | head -1 | awk '{print $3}')
+    local privkey=$(echo "$output" | grep "Private key:" | head -1 | awk '{print $3}')
 
-    if [ -z "$address" ] || [ -z "$pubkey" ]; then
+    if [ -z "$address" ] || [ -z "$pubkey" ] || [ -z "$privkey" ]; then
         log_error "No keys found in wallet. Generate a key first:"
         log_info "  cd wallet && cargo run -- --new --network $NETWORK"
         exit 1
     fi
 
-    echo "$address|$pubkey"
+    echo "$address|$pubkey|$privkey"
 }
 
 create_wallet_key() {
@@ -179,6 +181,7 @@ cmd_fund() {
     local key_info=$(get_wallet_key)
     local address=$(echo "$key_info" | cut -d'|' -f1)
     local pubkey=$(echo "$key_info" | cut -d'|' -f2)
+    local priv_key=$(echo "$key_info" | cut -d'|' -f3)
 
     log_info "Using address: $address"
 
@@ -222,10 +225,7 @@ cmd_fund() {
     log_info "  Output: $output_amt BTC"
     log_info "  Recovery address: $recovery_addr"
 
-    # Get private key for signing
-    cd wallet
-    local priv_key=$(cargo run --quiet 2>/dev/null | grep -A 2 "Address:.*$address" | grep "Private key:" | awk '{print $3}')
-    cd ..
+    # Private key already extracted from get_wallet_key
 
     # Run depositor create command
     cd depositor
