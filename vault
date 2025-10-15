@@ -187,19 +187,19 @@ select_wallet_key() {
         return
     fi
 
-    # Multiple keys, first list them
-    echo ""
-    log_info "Available keys:"
+    # Multiple keys, first list them (output to stderr so it's displayed)
+    echo "" >&2
+    log_info "Available keys:" >&2
     local addresses=($(echo "$wallet_output" | grep "Address:" | awk '{print $2}'))
     for i in "${!addresses[@]}"; do
         local num=$((i + 1))
-        printf "%2d. %s\n" "$num" "${addresses[$i]}"
+        printf "%2d. %s\n" "$num" "${addresses[$i]}" >&2
     done
-    echo ""
+    echo "" >&2
 
     # Scan for UTXOs for each
-    log_info "Scanning for UTXOs..."
-    echo ""
+    log_info "Scanning for UTXOs..." >&2
+    echo "" >&2
 
     local -a utxo_info
     for i in "${!addresses[@]}"; do
@@ -216,15 +216,15 @@ select_wallet_key() {
     done
 
     # Display keys with UTXO info
-    log_info "Keys with balances:"
+    log_info "Keys with balances:" >&2
     for i in "${!addresses[@]}"; do
         local num=$((i + 1))
-        printf "%2d. %s  (%s)\n" "$num" "${addresses[$i]}" "${utxo_info[$i]}"
+        printf "%2d. %s  (%s)\n" "$num" "${addresses[$i]}" "${utxo_info[$i]}" >&2
     done
-    echo ""
+    echo "" >&2
 
     while true; do
-        read -p "Select key number (1-$key_count): " key_num
+        read -p "Select key number (1-$key_count): " key_num >&2
 
         if [[ "$key_num" =~ ^[0-9]+$ ]] && [ "$key_num" -ge 1 ] && [ "$key_num" -le "$key_count" ]; then
             local key_info=$(get_wallet_key_by_index "$key_num")
@@ -234,7 +234,7 @@ select_wallet_key() {
             fi
         fi
 
-        log_error "Invalid selection. Please enter a number between 1 and $key_count"
+        log_error "Invalid selection. Please enter a number between 1 and $key_count" >&2
     done
 }
 
