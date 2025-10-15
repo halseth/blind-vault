@@ -302,6 +302,7 @@ cmd_fund() {
     # Private key already extracted from get_wallet_key
 
     # Run depositor create command
+    log_info "Running: depositor create --prevout $txid:$vout --prev-amt \"$amount BTC\" --output-amt \"$output_amt BTC\" --recovery-addr $recovery_addr --client-url $CLIENT_URL --priv-key [REDACTED] --network $NETWORK"
     cd depositor
     local output=$(cargo run --quiet -- create \
         --prevout "$txid:$vout" \
@@ -412,6 +413,7 @@ cmd_unvault() {
     local amount_sat=$(echo "$vault_amount * 100000000" | bc | cut -d'.' -f1)
 
     # Run depositor unvault command
+    log_info "Running: depositor unvault --vault-outpoint $vault_txid:$vault_vout --vault-amount \"$vault_amount BTC\" --destination-addr $dest_addr --timelock-blocks $timelock --recovery-addr $recovery_addr --client-url $CLIENT_URL --network $NETWORK"
     cd depositor
     local output=$(cargo run --quiet -- unvault \
         --vault-outpoint "$vault_txid:$vault_vout" \
