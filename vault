@@ -109,11 +109,20 @@ init_state() {
 }
 
 get_active_vault() {
+    local vault_id="$1"
+
     if [ ! -f "$STATE_FILE" ]; then
         echo ""
         return
     fi
 
+    # If vault_id specified, get that specific vault
+    if [ -n "$vault_id" ]; then
+        jq -r --arg id "$vault_id" '.vaults[] | select(.id == $id)' "$STATE_FILE"
+        return
+    fi
+
+    # Otherwise get first active vault
     jq -r '.vaults | map(select(.status != "finalized" and .status != "recovered")) | .[0] // empty' "$STATE_FILE"
 }
 
@@ -376,11 +385,31 @@ cmd_fund() {
 }
 
 cmd_unvault() {
+    local vault_id=""
+
+    # Parse optional --vault-id argument
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --vault-id)
+                vault_id="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     log_info "Starting unvault process..."
 
-    local vault=$(get_active_vault)
+    local vault=$(get_active_vault "$vault_id")
     if [ -z "$vault" ]; then
-        log_error "No active vault found. Run 'vault fund' first."
+        if [ -n "$vault_id" ]; then
+            log_error "Vault with ID '$vault_id' not found"
+        else
+            log_error "No active vault found. Run 'vault fund' first."
+        fi
+        list_available_vaults
         exit 1
     fi
 
@@ -485,11 +514,31 @@ cmd_unvault() {
 }
 
 cmd_recover() {
+    local vault_id=""
+
+    # Parse optional --vault-id argument
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --vault-id)
+                vault_id="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     log_info "Starting recovery process..."
 
-    local vault=$(get_active_vault)
+    local vault=$(get_active_vault "$vault_id")
     if [ -z "$vault" ]; then
-        log_error "No active vault found"
+        if [ -n "$vault_id" ]; then
+            log_error "Vault with ID '$vault_id' not found"
+        else
+            log_error "No active vault found"
+        fi
+        list_available_vaults
         exit 1
     fi
 
@@ -535,11 +584,31 @@ cmd_recover() {
 }
 
 cmd_finalize() {
+    local vault_id=""
+
+    # Parse optional --vault-id argument
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --vault-id)
+                vault_id="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     log_info "Starting finalization process..."
 
-    local vault=$(get_active_vault)
+    local vault=$(get_active_vault "$vault_id")
     if [ -z "$vault" ]; then
-        log_error "No active vault found"
+        if [ -n "$vault_id" ]; then
+            log_error "Vault with ID '$vault_id' not found"
+        else
+            log_error "No active vault found"
+        fi
+        list_available_vaults
         exit 1
     fi
 
@@ -584,7 +653,37 @@ cmd_finalize() {
     log_success "Vault finalized successfully!"
 }
 
+list_available_vaults() {
+    if [ ! -f "$STATE_FILE" ]; then
+        return
+    fi
+
+    local all_vaults=$(jq -r '.vaults[]' "$STATE_FILE" 2>/dev/null)
+    if [ -n "$all_vaults" ]; then
+        echo ""
+        log_info "Available vaults:"
+        jq -r '.vaults[] | "  [\(.status)] \(.id)"' "$STATE_FILE"
+        echo ""
+        log_info "Use --vault-id <id> to specify a vault"
+    fi
+}
+
 cmd_status() {
+    local vault_id=""
+
+    # Parse optional --vault-id argument
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --vault-id)
+                vault_id="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     log_info "Vault Status"
     echo "============================================"
 
@@ -593,17 +692,16 @@ cmd_status() {
         return
     fi
 
-    local vault=$(get_active_vault)
+    local vault=$(get_active_vault "$vault_id")
     if [ -z "$vault" ]; then
-        log_info "No active vault found"
+        if [ -n "$vault_id" ]; then
+            log_error "Vault with ID '$vault_id' not found"
+        else
+            log_info "No active vault found"
+        fi
 
         # Show all vaults
-        local all_vaults=$(jq -r '.vaults[]' "$STATE_FILE" 2>/dev/null)
-        if [ -n "$all_vaults" ]; then
-            echo ""
-            log_info "All vaults:"
-            jq -r '.vaults[] | "  [\(.status)] \(.id) - \(.vault_address)"' "$STATE_FILE"
-        fi
+        list_available_vaults
         return
     fi
 
@@ -678,31 +776,34 @@ main() {
 
     case "$command" in
         fund)
-            cmd_fund
+            cmd_fund "${@:2}"
             ;;
         unvault)
-            cmd_unvault
+            cmd_unvault "${@:2}"
             ;;
         recover)
-            cmd_recover
+            cmd_recover "${@:2}"
             ;;
         finalize)
-            cmd_finalize
+            cmd_finalize "${@:2}"
             ;;
         status)
-            cmd_status
+            cmd_status "${@:2}"
             ;;
         ""|help|--help|-h)
             cat << EOF
 Vault Management Script
 
 Usage:
-  vault fund              Deposit funds into a new vault
-  vault unvault           Initiate unvault process
-  vault recover           Recover funds to recovery address
-  vault finalize          Finalize unvault after timelock
-  vault status            Display vault status
-  vault help              Show this help message
+  vault fund                            Deposit funds into a new vault
+  vault unvault [--vault-id <id>]       Initiate unvault process
+  vault recover [--vault-id <id>]       Recover funds to recovery address
+  vault finalize [--vault-id <id>]      Finalize unvault after timelock
+  vault status [--vault-id <id>]        Display vault status
+  vault help                            Show this help message
+
+Options:
+  --vault-id <id>    Specify which vault to operate on (uses active vault if not specified)
 
 Environment Variables:
   VAULT_NETWORK          Bitcoin network (default: signet)
