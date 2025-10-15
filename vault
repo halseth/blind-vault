@@ -1,0 +1,635 @@
+#!/usr/bin/env bash
+#
+# Vault Management Script
+#
+# This script provides a unified CLI for managing Bitcoin vault operations
+# using blind co-signers. It integrates with bitcoind, the wallet tool,
+# and the depositor/client components.
+#
+# Usage:
+#   vault fund              - Deposit funds into a new vault
+#   vault unvault           - Initiate unvault process
+#   vault recover           - Recover funds to recovery address
+#   vault finalize          - Finalize unvault after timelock
+#   vault status            - Display vault status
+#
+
+set -e
+
+# Configuration defaults
+NETWORK="${VAULT_NETWORK:-signet}"
+CLIENT_URL="${VAULT_CLIENT_URL:-127.0.0.1:8090}"
+STATE_FILE="${VAULT_STATE_FILE:-vault-state.json}"
+BITCOIN_CLI="${BITCOIN_CLI:-bitcoin-cli}"
+BITCOIN_CLI_ARGS="${BITCOIN_CLI_ARGS:--signet}"
+STATIC_FEE="${VAULT_STATIC_FEE:-0.00001 BTC}"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Helper functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $*"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $*"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $*"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $*"
+}
+
+# Check if required commands are available
+check_dependencies() {
+    local missing=()
+
+    for cmd in jq cargo "$BITCOIN_CLI"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        log_error "Missing required commands: ${missing[*]}"
+        log_error "Please install: jq, cargo, and bitcoin-cli"
+        exit 1
+    fi
+}
+
+# Bitcoin RPC functions
+btc_cli() {
+    $BITCOIN_CLI $BITCOIN_CLI_ARGS "$@"
+}
+
+get_block_height() {
+    btc_cli getblockcount
+}
+
+get_utxos() {
+    local address="$1"
+    btc_cli listunspent 1 9999999 "[\"$address\"]"
+}
+
+broadcast_tx() {
+    local tx_hex="$1"
+    btc_cli sendrawtransaction "$tx_hex"
+}
+
+get_transaction() {
+    local txid="$1"
+    btc_cli getrawtransaction "$txid" true
+}
+
+# State management functions
+init_state() {
+    if [ ! -f "$STATE_FILE" ]; then
+        echo '{"version": 1, "vaults": []}' > "$STATE_FILE"
+        log_info "Initialized state file: $STATE_FILE"
+    fi
+}
+
+get_active_vault() {
+    if [ ! -f "$STATE_FILE" ]; then
+        echo ""
+        return
+    fi
+
+    jq -r '.vaults | map(select(.status != "finalized" and .status != "recovered")) | .[0] // empty' "$STATE_FILE"
+}
+
+add_vault() {
+    local vault_json="$1"
+    init_state
+
+    local temp_file=$(mktemp)
+    jq --argjson vault "$vault_json" '.vaults += [$vault]' "$STATE_FILE" > "$temp_file"
+    mv "$temp_file" "$STATE_FILE"
+}
+
+update_vault_status() {
+    local vault_id="$1"
+    local new_status="$2"
+    local additional_data="$3"
+
+    local temp_file=$(mktemp)
+    if [ -z "$additional_data" ]; then
+        jq --arg id "$vault_id" --arg status "$new_status" \
+            '.vaults = [.vaults[] | if .id == $id then .status = $status else . end]' \
+            "$STATE_FILE" > "$temp_file"
+    else
+        jq --arg id "$vault_id" --arg status "$new_status" --argjson data "$additional_data" \
+            '.vaults = [.vaults[] | if .id == $id then . + $data | .status = $status else . end]' \
+            "$STATE_FILE" > "$temp_file"
+    fi
+    mv "$temp_file" "$STATE_FILE"
+}
+
+# Wallet functions
+get_wallet_key() {
+    cd wallet
+    local output=$(cargo run --quiet 2>/dev/null | tail -5)
+    cd ..
+
+    # Extract the first key's address and public key
+    local address=$(echo "$output" | grep "Address:" | head -1 | awk '{print $2}')
+    local pubkey=$(echo "$output" | grep "Public key:" | head -1 | awk '{print $3}')
+
+    if [ -z "$address" ] || [ -z "$pubkey" ]; then
+        log_error "No keys found in wallet. Generate a key first:"
+        log_info "  cd wallet && cargo run -- --new --network $NETWORK"
+        exit 1
+    fi
+
+    echo "$address|$pubkey"
+}
+
+create_wallet_key() {
+    log_info "Generating new wallet key..."
+    cd wallet
+    cargo run --quiet -- --new --network "$NETWORK" 2>/dev/null | grep -E "(Address|Public key):" | tail -2
+    cd ..
+}
+
+# Vault subcommands
+
+cmd_fund() {
+    log_info "Starting vault funding process..."
+
+    # Get or create wallet key
+    local key_info=$(get_wallet_key)
+    local address=$(echo "$key_info" | cut -d'|' -f1)
+    local pubkey=$(echo "$key_info" | cut -d'|' -f2)
+
+    log_info "Using address: $address"
+
+    # Get available UTXOs
+    log_info "Querying bitcoind for available UTXOs..."
+    local utxos=$(get_utxos "$address")
+    local utxo_count=$(echo "$utxos" | jq 'length')
+
+    if [ "$utxo_count" -eq 0 ]; then
+        log_error "No UTXOs found for address $address"
+        log_info "Fund this address with: $BITCOIN_CLI $BITCOIN_CLI_ARGS sendtoaddress $address 0.001"
+        exit 1
+    fi
+
+    # Select first UTXO
+    local txid=$(echo "$utxos" | jq -r '.[0].txid')
+    local vout=$(echo "$utxos" | jq -r '.[0].vout')
+    local amount=$(echo "$utxos" | jq -r '.[0].amount')
+
+    log_info "Selected UTXO: $txid:$vout ($amount BTC)"
+
+    # Prompt for recovery address
+    read -p "Enter recovery address: " recovery_addr
+    if [ -z "$recovery_addr" ]; then
+        log_error "Recovery address is required"
+        exit 1
+    fi
+
+    # Calculate output amount (subtract fee)
+    local output_amt=$(echo "$amount - 0.00001" | bc)
+
+    log_info "Creating vault deposit..."
+    log_info "  Input: $txid:$vout ($amount BTC)"
+    log_info "  Output: $output_amt BTC"
+    log_info "  Recovery address: $recovery_addr"
+
+    # Get private key for signing
+    cd wallet
+    local priv_key=$(cargo run --quiet 2>/dev/null | grep -A 2 "Address:.*$address" | grep "Private key:" | awk '{print $3}')
+    cd ..
+
+    # Run depositor create command
+    cd depositor
+    local output=$(cargo run --quiet -- create \
+        --prevout "$txid:$vout" \
+        --prev-amt "$amount BTC" \
+        --output-amt "$output_amt BTC" \
+        --recovery-addr "$recovery_addr" \
+        --client-url "$CLIENT_URL" \
+        --priv-key "$priv_key" \
+        --network "$NETWORK" 2>&1)
+    cd ..
+
+    # Parse output
+    local vault_addr=$(echo "$output" | grep "Vault address:" | awk '{print $3}')
+    local deposit_tx=$(echo "$output" | grep "Raw deposit Transaction:" | awk '{print $4}')
+    local recovery_tx=$(echo "$output" | grep "Raw recovery Transaction:" | awk '{print $4}')
+
+    if [ -z "$vault_addr" ] || [ -z "$deposit_tx" ]; then
+        log_error "Failed to create vault deposit"
+        echo "$output"
+        exit 1
+    fi
+
+    log_success "Vault created successfully!"
+    log_info "Vault address: $vault_addr"
+
+    # Ask to broadcast
+    read -p "Broadcast deposit transaction? (y/N): " broadcast
+    local deposit_txid=""
+    if [[ "$broadcast" =~ ^[Yy]$ ]]; then
+        deposit_txid=$(broadcast_tx "$deposit_tx")
+        log_success "Deposit transaction broadcast: $deposit_txid"
+    else
+        log_info "Deposit transaction not broadcast. You can broadcast manually:"
+        log_info "  $deposit_tx"
+        # Calculate txid from raw transaction
+        deposit_txid=$(btc_cli decoderawtransaction "$deposit_tx" | jq -r '.txid')
+    fi
+
+    # Save vault state
+    local vault_id=$(echo "$deposit_txid:0")
+    local vault_state=$(jq -n \
+        --arg id "$vault_id" \
+        --arg status "funded" \
+        --arg txid "$deposit_txid" \
+        --arg vout "0" \
+        --arg amount "$output_amt" \
+        --arg vault_addr "$vault_addr" \
+        --arg recovery_addr "$recovery_addr" \
+        --arg recovery_tx "$recovery_tx" \
+        --arg deposit_tx "$deposit_tx" \
+        '{
+            id: $id,
+            status: $status,
+            vault_utxo: {txid: $txid, vout: ($vout | tonumber), amount: $amount},
+            vault_address: $vault_addr,
+            recovery_address: $recovery_addr,
+            recovery_tx: $recovery_tx,
+            deposit_tx: $deposit_tx,
+            created_at: now
+        }')
+
+    add_vault "$vault_state"
+    log_success "Vault state saved to $STATE_FILE"
+}
+
+cmd_unvault() {
+    log_info "Starting unvault process..."
+
+    local vault=$(get_active_vault)
+    if [ -z "$vault" ]; then
+        log_error "No active vault found. Run 'vault fund' first."
+        exit 1
+    fi
+
+    local vault_id=$(echo "$vault" | jq -r '.id')
+    local status=$(echo "$vault" | jq -r '.status')
+
+    if [ "$status" != "funded" ]; then
+        log_error "Vault is not in 'funded' state (current: $status)"
+        exit 1
+    fi
+
+    local vault_txid=$(echo "$vault" | jq -r '.vault_utxo.txid')
+    local vault_vout=$(echo "$vault" | jq -r '.vault_utxo.vout')
+    local vault_amount=$(echo "$vault" | jq -r '.vault_utxo.amount')
+    local recovery_addr=$(echo "$vault" | jq -r '.recovery_address')
+
+    log_info "Vault UTXO: $vault_txid:$vault_vout ($vault_amount BTC)"
+
+    # Prompt for destination and timelock
+    read -p "Enter destination address: " dest_addr
+    if [ -z "$dest_addr" ]; then
+        log_error "Destination address is required"
+        exit 1
+    fi
+
+    read -p "Enter timelock (in blocks): " timelock
+    if [ -z "$timelock" ]; then
+        log_error "Timelock is required"
+        exit 1
+    fi
+
+    log_info "Creating unvault transactions..."
+    log_info "  Destination: $dest_addr"
+    log_info "  Timelock: $timelock blocks"
+
+    # Convert amount to satoshis for depositor
+    local amount_sat=$(echo "$vault_amount * 100000000" | bc | cut -d'.' -f1)
+
+    # Run depositor unvault command
+    cd depositor
+    local output=$(cargo run --quiet -- unvault \
+        --vault-outpoint "$vault_txid:$vault_vout" \
+        --vault-amount "$vault_amount BTC" \
+        --destination-addr "$dest_addr" \
+        --timelock-blocks "$timelock" \
+        --recovery-addr "$recovery_addr" \
+        --client-url "$CLIENT_URL" \
+        --network "$NETWORK" 2>&1)
+    cd ..
+
+    # Parse output
+    local unvault_tx=$(echo "$output" | grep "Raw unvault transaction:" | awk '{print $4}')
+    local recovery_tx_unvault=$(echo "$output" | grep "Raw recovery transaction:" | awk '{print $4}')
+    local final_tx=$(echo "$output" | grep "Raw final spend transaction:" | awk '{print $5}')
+
+    if [ -z "$unvault_tx" ]; then
+        log_error "Failed to create unvault transactions"
+        echo "$output"
+        exit 1
+    fi
+
+    log_success "Unvault transactions created successfully!"
+
+    # Ask to broadcast unvault
+    read -p "Broadcast unvault transaction? (y/N): " broadcast
+    local unvault_txid=""
+    if [[ "$broadcast" =~ ^[Yy]$ ]]; then
+        unvault_txid=$(broadcast_tx "$unvault_tx")
+        log_success "Unvault transaction broadcast: $unvault_txid"
+    else
+        log_info "Unvault transaction not broadcast. You can broadcast manually."
+        unvault_txid=$(btc_cli decoderawtransaction "$unvault_tx" | jq -r '.txid')
+    fi
+
+    # Get current block height for timelock tracking
+    local current_height=$(get_block_height)
+    local unlock_height=$((current_height + timelock))
+
+    # Update vault state
+    local unvault_data=$(jq -n \
+        --arg unvault_txid "$unvault_txid" \
+        --arg unvault_tx "$unvault_tx" \
+        --arg recovery_tx "$recovery_tx_unvault" \
+        --arg final_tx "$final_tx" \
+        --arg dest_addr "$dest_addr" \
+        --arg timelock "$timelock" \
+        --arg unlock_height "$unlock_height" \
+        '{
+            unvault_txid: $unvault_txid,
+            unvault_tx: $unvault_tx,
+            unvault_recovery_tx: $recovery_tx,
+            final_spend_tx: $final_tx,
+            destination_address: $dest_addr,
+            timelock_blocks: ($timelock | tonumber),
+            unlock_height: ($unlock_height | tonumber)
+        }')
+
+    update_vault_status "$vault_id" "unvaulted" "$unvault_data"
+    log_success "Vault state updated to 'unvaulted'"
+    log_info "Final spend can be broadcast after block height: $unlock_height"
+}
+
+cmd_recover() {
+    log_info "Starting recovery process..."
+
+    local vault=$(get_active_vault)
+    if [ -z "$vault" ]; then
+        log_error "No active vault found"
+        exit 1
+    fi
+
+    local vault_id=$(echo "$vault" | jq -r '.id')
+    local status=$(echo "$vault" | jq -r '.status')
+
+    if [ "$status" != "funded" ] && [ "$status" != "unvaulted" ]; then
+        log_error "Cannot recover vault in state: $status"
+        exit 1
+    fi
+
+    local recovery_tx=""
+    if [ "$status" == "funded" ]; then
+        recovery_tx=$(echo "$vault" | jq -r '.recovery_tx')
+        log_info "Recovering from vault output..."
+    else
+        recovery_tx=$(echo "$vault" | jq -r '.unvault_recovery_tx')
+        log_info "Recovering from unvault output..."
+    fi
+
+    local recovery_addr=$(echo "$vault" | jq -r '.recovery_address')
+    log_info "Recovery address: $recovery_addr"
+
+    # Confirm recovery
+    read -p "Broadcast recovery transaction? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_info "Recovery cancelled"
+        exit 0
+    fi
+
+    # Broadcast recovery transaction
+    local recovery_txid=$(broadcast_tx "$recovery_tx")
+    log_success "Recovery transaction broadcast: $recovery_txid"
+
+    # Update vault state
+    update_vault_status "$vault_id" "recovered" "{\"recovery_txid\": \"$recovery_txid\"}"
+    log_success "Vault recovered successfully"
+}
+
+cmd_finalize() {
+    log_info "Starting finalization process..."
+
+    local vault=$(get_active_vault)
+    if [ -z "$vault" ]; then
+        log_error "No active vault found"
+        exit 1
+    fi
+
+    local vault_id=$(echo "$vault" | jq -r '.id')
+    local status=$(echo "$vault" | jq -r '.status')
+
+    if [ "$status" != "unvaulted" ]; then
+        log_error "Vault must be in 'unvaulted' state to finalize (current: $status)"
+        exit 1
+    fi
+
+    local unlock_height=$(echo "$vault" | jq -r '.unlock_height')
+    local current_height=$(get_block_height)
+    local dest_addr=$(echo "$vault" | jq -r '.destination_address')
+    local final_tx=$(echo "$vault" | jq -r '.final_spend_tx')
+
+    log_info "Current block height: $current_height"
+    log_info "Unlock height: $unlock_height"
+    log_info "Destination: $dest_addr"
+
+    if [ "$current_height" -lt "$unlock_height" ]; then
+        local remaining=$((unlock_height - current_height))
+        log_error "Timelock not yet expired. Wait $remaining more blocks."
+        exit 1
+    fi
+
+    log_success "Timelock expired! Ready to finalize."
+
+    # Confirm finalization
+    read -p "Broadcast final spend transaction? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_info "Finalization cancelled"
+        exit 0
+    fi
+
+    # Broadcast final spend transaction
+    local final_txid=$(broadcast_tx "$final_tx")
+    log_success "Final spend transaction broadcast: $final_txid"
+
+    # Update vault state
+    update_vault_status "$vault_id" "finalized" "{\"final_txid\": \"$final_txid\"}"
+    log_success "Vault finalized successfully!"
+}
+
+cmd_status() {
+    log_info "Vault Status"
+    echo "============================================"
+
+    if [ ! -f "$STATE_FILE" ]; then
+        log_info "No vault state file found"
+        return
+    fi
+
+    local vault=$(get_active_vault)
+    if [ -z "$vault" ]; then
+        log_info "No active vault found"
+
+        # Show all vaults
+        local all_vaults=$(jq -r '.vaults[]' "$STATE_FILE" 2>/dev/null)
+        if [ -n "$all_vaults" ]; then
+            echo ""
+            log_info "All vaults:"
+            jq -r '.vaults[] | "  [\(.status)] \(.id) - \(.vault_address)"' "$STATE_FILE"
+        fi
+        return
+    fi
+
+    local vault_id=$(echo "$vault" | jq -r '.id')
+    local status=$(echo "$vault" | jq -r '.status')
+    local vault_addr=$(echo "$vault" | jq -r '.vault_address')
+    local recovery_addr=$(echo "$vault" | jq -r '.recovery_address')
+    local amount=$(echo "$vault" | jq -r '.vault_utxo.amount')
+
+    echo ""
+    echo "Vault ID:         $vault_id"
+    echo "Status:           $status"
+    echo "Vault Address:    $vault_addr"
+    echo "Recovery Address: $recovery_addr"
+    echo "Amount:           $amount BTC"
+
+    if [ "$status" == "funded" ]; then
+        local vault_txid=$(echo "$vault" | jq -r '.vault_utxo.txid')
+        echo ""
+        echo "Vault UTXO:       $vault_txid:0"
+        echo ""
+        log_info "Next step: Run 'vault unvault' to initiate unvault process"
+
+    elif [ "$status" == "unvaulted" ]; then
+        local unvault_txid=$(echo "$vault" | jq -r '.unvault_txid')
+        local dest_addr=$(echo "$vault" | jq -r '.destination_address')
+        local unlock_height=$(echo "$vault" | jq -r '.unlock_height')
+        local current_height=$(get_block_height)
+        local remaining=$((unlock_height - current_height))
+
+        echo ""
+        echo "Unvault UTXO:     $unvault_txid:0"
+        echo "Destination:      $dest_addr"
+        echo "Unlock Height:    $unlock_height"
+        echo "Current Height:   $current_height"
+
+        if [ "$remaining" -gt 0 ]; then
+            echo "Remaining Blocks: $remaining"
+            echo ""
+            log_info "Wait $remaining more blocks before running 'vault finalize'"
+        else
+            echo ""
+            log_success "Timelock expired! Run 'vault finalize' to complete"
+        fi
+
+    elif [ "$status" == "recovered" ]; then
+        local recovery_txid=$(echo "$vault" | jq -r '.recovery_txid')
+        echo ""
+        echo "Recovery TXID:    $recovery_txid"
+        echo ""
+        log_success "Vault has been recovered to: $recovery_addr"
+
+    elif [ "$status" == "finalized" ]; then
+        local final_txid=$(echo "$vault" | jq -r '.final_txid')
+        local dest_addr=$(echo "$vault" | jq -r '.destination_address')
+        echo ""
+        echo "Final TXID:       $final_txid"
+        echo "Destination:      $dest_addr"
+        echo ""
+        log_success "Vault has been finalized"
+    fi
+
+    echo "============================================"
+}
+
+# Main command dispatcher
+main() {
+    check_dependencies
+    init_state
+
+    local command="${1:-}"
+
+    case "$command" in
+        fund)
+            cmd_fund
+            ;;
+        unvault)
+            cmd_unvault
+            ;;
+        recover)
+            cmd_recover
+            ;;
+        finalize)
+            cmd_finalize
+            ;;
+        status)
+            cmd_status
+            ;;
+        ""|help|--help|-h)
+            cat << EOF
+Vault Management Script
+
+Usage:
+  vault fund              Deposit funds into a new vault
+  vault unvault           Initiate unvault process
+  vault recover           Recover funds to recovery address
+  vault finalize          Finalize unvault after timelock
+  vault status            Display vault status
+  vault help              Show this help message
+
+Environment Variables:
+  VAULT_NETWORK          Bitcoin network (default: signet)
+  VAULT_CLIENT_URL       Client server URL (default: 127.0.0.1:8090)
+  VAULT_STATE_FILE       State file path (default: vault-state.json)
+  BITCOIN_CLI            Bitcoin CLI command (default: bitcoin-cli)
+  BITCOIN_CLI_ARGS       Bitcoin CLI arguments (default: -signet)
+  VAULT_STATIC_FEE       Static fee amount (default: 0.00001 BTC)
+
+Examples:
+  # Fund a new vault
+  vault fund
+
+  # Check vault status
+  vault status
+
+  # Unvault with 10 block timelock
+  vault unvault
+
+  # Recover to pre-defined recovery address
+  vault recover
+
+  # Finalize after timelock expires
+  vault finalize
+
+EOF
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            echo "Run 'vault help' for usage information"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
