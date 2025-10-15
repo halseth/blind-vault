@@ -76,7 +76,17 @@ get_block_height() {
 
 get_utxos() {
     local address="$1"
-    btc_cli listunspent 1 9999999 "[\"$address\"]"
+    # Use scantxoutset instead of listunspent since wallet keys aren't in bitcoind
+    # Returns UTXOs for the address without requiring wallet import
+    local result=$(btc_cli scantxoutset start "[\"addr($address)\"]" 2>/dev/null)
+
+    # Convert scantxoutset output to listunspent-compatible format
+    echo "$result" | jq '[.unspents[] | {
+        txid: .txid,
+        vout: .vout,
+        amount: .amount,
+        height: .height
+    }]'
 }
 
 broadcast_tx() {
