@@ -145,24 +145,90 @@ update_vault_status() {
 }
 
 # Wallet functions
-get_wallet_key() {
+list_wallet_keys() {
     cd wallet
     local output=$(cargo run --quiet 2>/dev/null)
     cd ..
+    echo "$output"
+}
 
-    # Extract the first key's address, public key, and private key
-    # Wallet output has groups of 3 lines: Private key, Public key, Address
-    local address=$(echo "$output" | grep "Address:" | head -1 | awk '{print $2}')
-    local pubkey=$(echo "$output" | grep "Public key:" | head -1 | awk '{print $3}')
-    local privkey=$(echo "$output" | grep "Private key:" | head -1 | awk '{print $3}')
+get_wallet_key_by_index() {
+    local index="$1"
+    local wallet_output=$(list_wallet_keys)
+
+    # Extract key info for the specified index (1-based)
+    # Each key has 3 lines: Private key, Public key, Address
+    local privkey=$(echo "$wallet_output" | grep "Private key:" | sed -n "${index}p" | awk '{print $3}')
+    local pubkey=$(echo "$wallet_output" | grep "Public key:" | sed -n "${index}p" | awk '{print $3}')
+    local address=$(echo "$wallet_output" | grep "Address:" | sed -n "${index}p" | awk '{print $2}')
 
     if [ -z "$address" ] || [ -z "$pubkey" ] || [ -z "$privkey" ]; then
+        return 1
+    fi
+
+    echo "$address|$pubkey|$privkey"
+}
+
+select_wallet_key() {
+    local wallet_output=$(list_wallet_keys)
+
+    # Count number of keys
+    local key_count=$(echo "$wallet_output" | grep -c "Address:")
+
+    if [ "$key_count" -eq 0 ]; then
         log_error "No keys found in wallet. Generate a key first:"
         log_info "  cd wallet && cargo run -- --new --network $NETWORK"
         exit 1
     fi
 
-    echo "$address|$pubkey|$privkey"
+    if [ "$key_count" -eq 1 ]; then
+        # Only one key, use it automatically
+        get_wallet_key_by_index 1
+        return
+    fi
+
+    # Multiple keys, scan for UTXOs for each
+    echo ""
+    log_info "Scanning for UTXOs..."
+    echo ""
+
+    local addresses=($(echo "$wallet_output" | grep "Address:" | awk '{print $2}'))
+    local -a utxo_info
+
+    for i in "${!addresses[@]}"; do
+        local addr="${addresses[$i]}"
+        local utxos=$(get_utxos "$addr")
+        local utxo_count=$(echo "$utxos" | jq 'length')
+        local total_amount=0
+
+        if [ "$utxo_count" -gt 0 ]; then
+            total_amount=$(echo "$utxos" | jq '[.[].amount] | add')
+        fi
+
+        utxo_info[$i]="$utxo_count UTXOs, $total_amount BTC"
+    done
+
+    # Display keys with UTXO info
+    log_info "Available keys:"
+    for i in "${!addresses[@]}"; do
+        local num=$((i + 1))
+        printf "%2d. %s  (%s)\n" "$num" "${addresses[$i]}" "${utxo_info[$i]}"
+    done
+    echo ""
+
+    while true; do
+        read -p "Select key number (1-$key_count): " key_num
+
+        if [[ "$key_num" =~ ^[0-9]+$ ]] && [ "$key_num" -ge 1 ] && [ "$key_num" -le "$key_count" ]; then
+            local key_info=$(get_wallet_key_by_index "$key_num")
+            if [ -n "$key_info" ]; then
+                echo "$key_info"
+                return
+            fi
+        fi
+
+        log_error "Invalid selection. Please enter a number between 1 and $key_count"
+    done
 }
 
 create_wallet_key() {
@@ -177,12 +243,13 @@ create_wallet_key() {
 cmd_fund() {
     log_info "Starting vault funding process..."
 
-    # Get or create wallet key
-    local key_info=$(get_wallet_key)
+    # Select wallet key
+    local key_info=$(select_wallet_key)
     local address=$(echo "$key_info" | cut -d'|' -f1)
     local pubkey=$(echo "$key_info" | cut -d'|' -f2)
     local priv_key=$(echo "$key_info" | cut -d'|' -f3)
 
+    echo ""
     log_info "Using address: $address"
 
     # Get available UTXOs
