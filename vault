@@ -317,7 +317,7 @@ cmd_fund() {
     # Parse output
     local vault_addr=$(echo "$output" | grep "Vault address:" | awk '{print $3}')
     local deposit_tx=$(echo "$output" | grep "Raw deposit Transaction:" | awk '{print $4}')
-    local recovery_tx=$(echo "$output" | grep "Raw recovery Transaction:" | awk '{print $4}')
+    local recovery_tx=$(echo "$output" | grep "Raw recovery transaction:" | awk '{print $4}')
 
     if [ -z "$vault_addr" ] || [ -z "$deposit_tx" ]; then
         log_error "Failed to create vault deposit"
