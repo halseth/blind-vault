@@ -325,6 +325,13 @@ cmd_fund() {
         exit 1
     fi
 
+    # Debug: check if recovery_tx was parsed
+    if [ -z "$recovery_tx" ]; then
+        log_warn "Recovery transaction not found in output"
+        log_warn "Looking for line containing 'Raw recovery Transaction:'"
+        echo "$output" | grep -i "recovery"
+    fi
+
     log_success "Vault created successfully!"
     log_info "Vault address: $vault_addr"
 
@@ -351,7 +358,7 @@ cmd_fund() {
         --arg amount "$output_amt" \
         --arg vault_addr "$vault_addr" \
         --arg recovery_addr "$recovery_addr" \
-        --arg recovery_tx "$recovery_tx" \
+        --arg vault_recovery_tx "$recovery_tx" \
         --arg deposit_tx "$deposit_tx" \
         '{
             id: $id,
@@ -359,7 +366,7 @@ cmd_fund() {
             vault_utxo: {txid: $txid, vout: ($vout | tonumber), amount: $amount},
             vault_address: $vault_addr,
             recovery_address: $recovery_addr,
-            recovery_tx: $recovery_tx,
+            vault_recovery_tx: $vault_recovery_tx,
             deposit_tx: $deposit_tx,
             created_at: now
         }')
@@ -453,11 +460,11 @@ cmd_unvault() {
     local current_height=$(get_block_height)
     local unlock_height=$((current_height + timelock))
 
-    # Update vault state
+    # Update vault state - preserving vault recovery tx
     local unvault_data=$(jq -n \
         --arg unvault_txid "$unvault_txid" \
         --arg unvault_tx "$unvault_tx" \
-        --arg recovery_tx "$recovery_tx_unvault" \
+        --arg unvault_recovery_tx "$recovery_tx_unvault" \
         --arg final_tx "$final_tx" \
         --arg dest_addr "$dest_addr" \
         --arg timelock "$timelock" \
@@ -465,7 +472,7 @@ cmd_unvault() {
         '{
             unvault_txid: $unvault_txid,
             unvault_tx: $unvault_tx,
-            unvault_recovery_tx: $recovery_tx,
+            unvault_recovery_tx: $unvault_recovery_tx,
             final_spend_tx: $final_tx,
             destination_address: $dest_addr,
             timelock_blocks: ($timelock | tonumber),
@@ -496,11 +503,16 @@ cmd_recover() {
 
     local recovery_tx=""
     if [ "$status" == "funded" ]; then
-        recovery_tx=$(echo "$vault" | jq -r '.recovery_tx')
+        recovery_tx=$(echo "$vault" | jq -r '.vault_recovery_tx')
         log_info "Recovering from vault output..."
     else
         recovery_tx=$(echo "$vault" | jq -r '.unvault_recovery_tx')
         log_info "Recovering from unvault output..."
+    fi
+
+    if [ -z "$recovery_tx" ] || [ "$recovery_tx" == "null" ]; then
+        log_error "Recovery transaction not found in vault state"
+        exit 1
     fi
 
     local recovery_addr=$(echo "$vault" | jq -r '.recovery_address')
