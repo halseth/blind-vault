@@ -156,7 +156,7 @@ update_vault_status() {
 # Wallet functions
 list_wallet_keys() {
     cd wallet
-    local output=$(cargo run --quiet 2>/dev/null)
+    local output=$(cargo run --quiet -- --network "$NETWORK" 2>/dev/null)
     cd ..
     echo "$output"
 }
@@ -181,14 +181,47 @@ get_wallet_key_by_index() {
 select_wallet_key() {
     local wallet_output=$(list_wallet_keys)
 
-    # Count number of keys
-    local key_count=$(echo "$wallet_output" | grep -c "Address:")
+    # Filter keys by network - only show keys for current network
+    local filtered_output=""
+    local in_key=false
+    local key_buffer=""
+    local key_network=""
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^Key\ #[0-9]+: ]]; then
+            # Save previous key if it matches network
+            if [ "$in_key" = true ] && [ "$key_network" = "$NETWORK" ]; then
+                filtered_output="${filtered_output}${key_buffer}"
+            fi
+            # Start new key
+            in_key=true
+            key_buffer="$line"$'\n'
+            key_network=""
+        elif [ "$in_key" = true ]; then
+            key_buffer="${key_buffer}${line}"$'\n'
+            # Check if this line has the network
+            if [[ "$line" =~ Network:.*([a-z]+) ]]; then
+                key_network=$(echo "$line" | awk '{print $2}')
+            fi
+        fi
+    done <<< "$wallet_output"
+
+    # Save last key if it matches
+    if [ "$in_key" = true ] && [ "$key_network" = "$NETWORK" ]; then
+        filtered_output="${filtered_output}${key_buffer}"
+    fi
+
+    # Count keys in filtered output
+    local key_count=$(echo "$filtered_output" | grep -c "Address:")
 
     if [ "$key_count" -eq 0 ]; then
-        log_error "No keys found in wallet. Generate a key first:"
+        log_error "No keys found for network '$NETWORK'. Generate a key first:"
         log_info "  cd wallet && cargo run -- --new --network $NETWORK"
         exit 1
     fi
+
+    # Use filtered output from here on
+    wallet_output="$filtered_output"
 
     if [ "$key_count" -eq 1 ]; then
         # Only one key, use it automatically
