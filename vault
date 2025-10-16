@@ -80,8 +80,8 @@ get_utxos() {
     # Returns UTXOs for the address without requiring wallet import
     local result=$(btc_cli scantxoutset start "[\"addr($address)\"]" 2>&1)
 
-    # Check if bitcoind is not running
-    if echo "$result" | grep -q "Could not connect"; then
+    # Check if bitcoind is not running (check for error prefix or connection error)
+    if echo "$result" | grep -q -e "Could not connect" -e "^error:"; then
         log_error "Could not connect to bitcoind"
         log_error "Make sure bitcoind is running with the correct network settings"
         log_error "Current settings: $BITCOIN_CLI $BITCOIN_CLI_ARGS"
