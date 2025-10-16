@@ -805,6 +805,10 @@ main() {
     check_dependencies
     init_state
 
+    # Display current network
+    log_info "Network: $NETWORK"
+    echo ""
+
     local command="${1:-}"
 
     case "$command" in
