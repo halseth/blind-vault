@@ -45,6 +45,12 @@ struct KeyEntry {
     private_key: String,
     public_key: String,
     address: String,
+    #[serde(default = "default_network")]
+    network: String,
+}
+
+fn default_network() -> String {
+    "signet".to_string()
 }
 
 impl WalletData {
@@ -91,22 +97,24 @@ fn generate_keypair(network: Network) -> KeyEntry {
         private_key: hex::encode(keypair.secret_key().secret_bytes()),
         public_key: xonly_pubkey.to_string(),
         address: address.to_string(),
+        network: network.to_string(),
     }
 }
 
-fn display_keys(wallet: &WalletData, network: Network) {
+fn display_keys(wallet: &WalletData, _network: Network) {
     if wallet.keys.is_empty() {
         println!("No keys in wallet. Use --new to generate a key.");
         return;
     }
 
-    println!("Wallet keys (network: {}):", network);
+    println!("Wallet keys:");
     println!("{}", "-".repeat(80));
     for (i, entry) in wallet.keys.iter().enumerate() {
         println!("Key #{}:", i + 1);
         println!("  Private key: {}", entry.private_key);
         println!("  Public key:  {}", entry.public_key);
         println!("  Address:     {}", entry.address);
+        println!("  Network:     {}", entry.network);
         println!();
     }
 }
@@ -181,6 +189,7 @@ fn main() {
         println!("  Private key: {}", entry.private_key);
         println!("  Public key:  {}", entry.public_key);
         println!("  Address:     {}", entry.address);
+        println!("  Network:     {}", entry.network);
 
         wallet.add_key(entry);
         wallet.save();
