@@ -247,11 +247,11 @@ select_wallet_key() {
     for i in "${!addresses[@]}"; do
         local addr="${addresses[$i]}"
         local utxos=$(get_utxos "$addr")
-        local utxo_count=$(echo "$utxos" | jq 'length')
+        local utxo_count=$(echo "$utxos" | jq 'length // 0')
         local total_amount=0
 
         if [ "$utxo_count" -gt 0 ]; then
-            total_amount=$(echo "$utxos" | jq '[.[].amount] | add')
+            total_amount=$(echo "$utxos" | jq '[.[].amount] | add // 0')
         fi
 
         utxo_info[$i]="$utxo_count UTXOs, $total_amount BTC"
