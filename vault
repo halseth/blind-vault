@@ -78,16 +78,30 @@ get_utxos() {
     local address="$1"
     # Use scantxoutset instead of listunspent since wallet keys aren't in bitcoind
     # Returns UTXOs for the address without requiring wallet import
-    local result=$(btc_cli scantxoutset start "[\"addr($address)\"]" 2>/dev/null)
+    local result=$(btc_cli scantxoutset start "[\"addr($address)\"]" 2>&1)
+
+    # Check if bitcoind is not running
+    if echo "$result" | grep -q "Could not connect"; then
+        log_error "Could not connect to bitcoind"
+        log_error "Make sure bitcoind is running with the correct network settings"
+        log_error "Current settings: $BITCOIN_CLI $BITCOIN_CLI_ARGS"
+        exit 1
+    fi
 
     # Convert scantxoutset output to listunspent-compatible format
     # Return empty array if no unspents found
-    echo "$result" | jq 'if .unspents then [.unspents[] | {
-        txid: .txid,
-        vout: .vout,
-        amount: .amount,
-        height: .height
-    }] else [] end'
+    if echo "$result" | jq -e . >/dev/null 2>&1; then
+        echo "$result" | jq 'if .unspents then [.unspents[] | {
+            txid: .txid,
+            vout: .vout,
+            amount: .amount,
+            height: .height
+        }] else [] end'
+    else
+        log_error "Unexpected response from bitcoind"
+        echo "$result" >&2
+        exit 1
+    fi
 }
 
 broadcast_tx() {
