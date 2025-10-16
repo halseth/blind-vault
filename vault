@@ -21,7 +21,28 @@ NETWORK="${VAULT_NETWORK:-signet}"
 CLIENT_URL="${VAULT_CLIENT_URL:-127.0.0.1:8090}"
 STATE_FILE="${VAULT_STATE_FILE:-vault-state.json}"
 BITCOIN_CLI="${BITCOIN_CLI:-bitcoin-cli}"
-BITCOIN_CLI_ARGS="${BITCOIN_CLI_ARGS:--signet}"
+
+# Set BITCOIN_CLI_ARGS based on NETWORK if not explicitly set
+if [ -z "${BITCOIN_CLI_ARGS+x}" ]; then
+    case "$NETWORK" in
+        bitcoin|mainnet)
+            BITCOIN_CLI_ARGS=""
+            ;;
+        testnet)
+            BITCOIN_CLI_ARGS="-testnet"
+            ;;
+        signet)
+            BITCOIN_CLI_ARGS="-signet"
+            ;;
+        regtest)
+            BITCOIN_CLI_ARGS="-regtest"
+            ;;
+        *)
+            BITCOIN_CLI_ARGS="-$NETWORK"
+            ;;
+    esac
+fi
+
 STATIC_FEE="${VAULT_STATIC_FEE:-0.00001 BTC}"
 
 # Colors for output
@@ -82,9 +103,14 @@ get_utxos() {
 
     # Check if bitcoind is not running (check for error prefix or connection error)
     if echo "$result" | grep -q -e "Could not connect" -e "^error:"; then
-        log_error "Could not connect to bitcoind"
-        log_error "Make sure bitcoind is running with the correct network settings"
-        log_error "Current settings: $BITCOIN_CLI $BITCOIN_CLI_ARGS"
+        log_error "Could not connect to bitcoind" >&2
+        log_error "Make sure bitcoind is running with the correct network settings" >&2
+        log_error "Current settings: $BITCOIN_CLI $BITCOIN_CLI_ARGS" >&2
+        log_error "Current network: $NETWORK" >&2
+        if [ "$NETWORK" = "regtest" ] && [[ ! "$BITCOIN_CLI_ARGS" =~ regtest ]]; then
+            log_error "Note: VAULT_NETWORK is set to 'regtest' but BITCOIN_CLI_ARGS does not contain '-regtest'" >&2
+            log_error "Try: VAULT_NETWORK=regtest BITCOIN_CLI_ARGS='-regtest' ./vault fund" >&2
+        fi
         exit 1
     fi
 
@@ -98,7 +124,7 @@ get_utxos() {
             height: .height
         }] else [] end'
     else
-        log_error "Unexpected response from bitcoind"
+        log_error "Unexpected response from bitcoind" >&2
         echo "$result" >&2
         exit 1
     fi
@@ -118,7 +144,7 @@ get_transaction() {
 init_state() {
     if [ ! -f "$STATE_FILE" ]; then
         echo '{"version": 1, "vaults": []}' > "$STATE_FILE"
-        log_info "Initialized state file: $STATE_FILE"
+        log_info "Initialized state file: $STATE_FILE" >&2
     fi
 }
 
@@ -260,7 +286,8 @@ select_wallet_key() {
     local -a utxo_info
     for i in "${!addresses[@]}"; do
         local addr="${addresses[$i]}"
-        local utxos=$(get_utxos "$addr")
+        local utxos
+        utxos=$(get_utxos "$addr") || exit 1
         local utxo_count=$(echo "$utxos" | jq 'length // 0')
         local total_amount=0
 
