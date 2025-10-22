@@ -198,102 +198,19 @@ async fn sign_vault(
         ..Default::default()
     }];
 
-    let mut cache = SighashCache::new(&recovery_tx);
-    let (msg, sighash_type) = recovery_psbt.sighash_taproot(0, &mut cache, None).unwrap();
-    let message = msg.as_ref();
-
-    println!("msg: {:?}", msg);
-    println!("sighash_type: {:?}", sighash_type);
-
-    let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
-    let bbs: MaybePoint = blinding_factors
-        .iter()
-        .enumerate()
-        .map(|(i, fac)| {
-            let pubkey: Point = pubkeys[i].into();
-            fac.beta * pubkey
-        })
-        .sum();
-
-    let ggs: MaybePoint = blinding_factors
-        .iter()
-        .enumerate()
-        .map(|(i, fac)| {
-            let nonce = public_nonces[i].clone();
-            fac.gamma * nonce.R2
-        })
-        .sum();
-
-    let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
-    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
-    let sign_nonce = agg_nonce + ggs + aas * G + bbs;
-
-    let adaptor_point = MaybePoint::Infinity;
-    let adapted_nonce = sign_nonce + adaptor_point;
-
-    let nonce_x_bytes = adapted_nonce.serialize_xonly();
-    let e: MaybeScalar =
-        compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
-
-    let partial_signatures = request_partial_sigs(
+    // Sign the recovery PSBT using the extracted method
+    let recovery_psbt = sign_psbt(
+        recovery_psbt,
         sessions,
         &key_agg_ctx,
         tweaked_aggregated_pubkey,
         &blinding_factors,
-        sign_nonce,
-        b,
-        e,
-        hex::encode(message),
         &pubkeys,
         &public_nonces,
         &coeff_salt,
         "VAULT",
     )
     .await?;
-
-    verify_partial_sigs(
-        &public_nonces,
-        &key_agg_ctx,
-        tweaked_aggregated_pubkey,
-        &blinding_factors,
-        sign_nonce,
-        b,
-        e,
-        &partial_signatures,
-    );
-
-    let unblinded_sigs = unblind_partial_sigs(&blinding_factors, sign_nonce, partial_signatures);
-
-    let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
-
-    musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
-        .expect("aggregated signature must be valid");
-
-    let signature = schnorr::Signature::from_slice(&final_signature).unwrap();
-
-    let signature = taproot::Signature {
-        signature,
-        sighash_type,
-    };
-
-    let mut sign_input = recovery_psbt.inputs[0].clone();
-
-    sign_input.tap_key_sig = Some(signature);
-    recovery_psbt.inputs[0] = sign_input;
-
-    // Step 4: Finalizer role; that finalizes the PSBT.
-    recovery_psbt.inputs.iter_mut().for_each(|input| {
-        let mut script_witness: Witness = Witness::new();
-        script_witness.push(input.tap_key_sig.unwrap().to_vec());
-        input.final_script_witness = Some(script_witness);
-
-        // Clear all the data fields as per the spec.
-        input.partial_sigs = BTreeMap::new();
-        input.sighash_type = None;
-        input.redeem_script = None;
-        input.witness_script = None;
-        input.bip32_derivation = BTreeMap::new();
-    });
 
     let spend_tx = recovery_psbt.clone().extract_tx().unwrap();
 
@@ -859,6 +776,126 @@ fn create_final_spend_transaction(
 
     // Add witness_utxo for the unvault input
     psbt.inputs[0].witness_utxo = Some(unvault_tx.output[0].clone());
+
+    Ok(psbt)
+}
+
+// Helper function to sign a PSBT using blind signatures from signers
+async fn sign_psbt(
+    mut psbt: Psbt,
+    sessions: Vec<SigningSession>,
+    key_agg_ctx: &KeyAggContext,
+    tweaked_aggregated_pubkey: Point,
+    blinding_factors: &Vec<BlindingFactors>,
+    pubkeys: &Vec<PublicKey>,
+    public_nonces: &Vec<PubNonce>,
+    coeff_salt: &[u8; 32],
+    tx_type: &str,
+) -> Result<Psbt, Box<dyn std::error::Error>> {
+    // Extract the sighash message from the PSBT
+    let tx = psbt.unsigned_tx.clone();
+    let mut cache = SighashCache::new(&tx);
+    let (msg, sighash_type) = psbt.sighash_taproot(0, &mut cache, None)?;
+    let message = msg.as_ref();
+
+    println!("Signing PSBT with tx_type: {}", tx_type);
+    println!("msg: {:?}", msg);
+    println!("sighash_type: {:?}", sighash_type);
+
+    // Calculate blinding factor adjustments
+    let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
+    let bbs: MaybePoint = blinding_factors
+        .iter()
+        .enumerate()
+        .map(|(i, fac)| {
+            let pubkey: Point = pubkeys[i].into();
+            fac.beta * pubkey
+        })
+        .sum();
+
+    let ggs: MaybePoint = blinding_factors
+        .iter()
+        .enumerate()
+        .map(|(i, fac)| {
+            let nonce = public_nonces[i].clone();
+            fac.gamma * nonce.R2
+        })
+        .sum();
+
+    // Calculate aggregated nonce from public nonces
+    let aggregated_nonce: AggNonce = public_nonces.iter().sum();
+    let b: MaybeScalar = aggregated_nonce.nonce_coefficient(tweaked_aggregated_pubkey, &message);
+    let agg_nonce: MaybePoint = aggregated_nonce.final_nonce(b);
+    let sign_nonce = agg_nonce + ggs + aas * G + bbs;
+
+    let adaptor_point = MaybePoint::Infinity;
+    let adapted_nonce = sign_nonce + adaptor_point;
+
+    let nonce_x_bytes = adapted_nonce.serialize_xonly();
+    let e: MaybeScalar =
+        compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
+
+    // Request partial signatures from signers
+    let partial_signatures = request_partial_sigs(
+        sessions,
+        &key_agg_ctx,
+        tweaked_aggregated_pubkey,
+        &blinding_factors,
+        sign_nonce,
+        b,
+        e,
+        hex::encode(message),
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
+        tx_type,
+    )
+    .await?;
+
+    // Verify partial signatures
+    verify_partial_sigs(
+        &public_nonces,
+        &key_agg_ctx,
+        tweaked_aggregated_pubkey,
+        &blinding_factors,
+        sign_nonce,
+        b,
+        e,
+        &partial_signatures,
+    );
+
+    // Unblind and aggregate signatures
+    let unblinded_sigs = unblind_partial_sigs(&blinding_factors, sign_nonce, partial_signatures);
+    let final_signature = aggregate_partial_sigs(message, &key_agg_ctx, sign_nonce, unblinded_sigs);
+
+    // Verify the aggregated signature
+    musig2::verify_single(tweaked_aggregated_pubkey, &final_signature, message)
+        .expect("aggregated signature must be valid");
+
+    let signature = schnorr::Signature::from_slice(&final_signature).unwrap();
+    let signature = taproot::Signature {
+        signature,
+        sighash_type,
+    };
+
+    // Add signature to PSBT
+    let mut sign_input = psbt.inputs[0].clone();
+    sign_input.tap_key_sig = Some(signature);
+    psbt.inputs[0] = sign_input;
+
+    // Finalize the PSBT
+    psbt.inputs.iter_mut().for_each(|input| {
+        let mut script_witness: Witness = Witness::new();
+        script_witness.push(input.tap_key_sig.unwrap().to_vec());
+        input.final_script_witness = Some(script_witness);
+
+        // Clear all the data fields as per the spec.
+        input.partial_sigs = BTreeMap::new();
+        input.sighash_type = None;
+        input.redeem_script = None;
+        input.witness_script = None;
+        input.bip32_derivation = BTreeMap::new();
+    });
 
     Ok(psbt)
 }
