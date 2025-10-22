@@ -8,3 +8,4 @@
 .DS_Store
 client/receipt.txt
 wallet/wallet.json
+vault-state.json
