@@ -705,22 +705,6 @@ fn parse_pubkey(pub_str: &str) -> PublicKey {
     pk
 }
 
-// Helper function to create P2TR address from a Point
-fn create_p2tr_address(pubkey: &Point) -> Address {
-    use bitcoin::XOnlyPublicKey;
-    use bitcoin::key::TweakedPublicKey;
-
-    // Convert Point to XOnlyPublicKey
-    let xonly_pubkey =
-        XOnlyPublicKey::from_slice(&pubkey.serialize_xonly()).expect("Valid x-only public key");
-
-    // Create P2TR address (taproot)
-    Address::p2tr_tweaked(
-        TweakedPublicKey::dangerous_assume_tweaked(xonly_pubkey),
-        Network::Signet,
-    )
-}
-
 // Helper function to create unvault transaction
 fn create_unvault_transaction(
     req: &VaultUnvaultReq,
