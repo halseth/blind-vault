@@ -275,17 +275,6 @@ async fn sign_unvault(
 ) -> actix_web::Result<impl Responder> {
     println!("Unvault request: {:?}", req);
 
-    // Print session data if provided
-    if let Some(ref session_data) = req.session_data {
-        println!("Received session data:");
-        println!("  - Coefficient salt: {}", session_data.coeff_salt);
-        println!("  - Number of pubkeys: {}", session_data.pubkeys.len());
-        println!("  - Number of pubnonces: {}", session_data.pubnonces.len());
-        println!("  - Number of blinding factors: {}", session_data.blinding_factors.len());
-    } else {
-        println!("WARNING: No session data provided - will create new signing session");
-    }
-
     let secp = Secp256k1::new();
     let cfg = data.cfg.clone();
     let args = Args::parse();
@@ -305,13 +294,49 @@ async fn sign_unvault(
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid recovery address: {}", e)))?
         .assume_checked();
 
-    // Initialize signing sessions with signers
-    let sessions = init_signer_sessions(&cfg).await?;
-    let num_signers = sessions.len();
+    // Reuse session data from vault deposit
+    let session_data = &req.session_data;
+    println!("Reusing session data from vault deposit:");
+    println!("  - Coefficient salt: {}", session_data.coeff_salt);
+    println!("  - Number of pubkeys: {}", session_data.pubkeys.len());
+    println!("  - Number of pubnonces: {}", session_data.pubnonces.len());
+    println!("  - Number of blinding factors: {}", session_data.blinding_factors.len());
 
-    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
-    let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt), 1);
+    // Parse session data from hex strings
+    let coeff_salt: [u8; 32] = hex::decode(&session_data.coeff_salt)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid coeff_salt hex: {}", e)))?
+        .try_into()
+        .map_err(|_| actix_web::error::ErrorBadRequest("coeff_salt must be 32 bytes"))?;
+
+    let blinding_factors: Vec<BlindingFactors> = session_data.blinding_factors
+        .iter()
+        .map(|(alpha_hex, beta_hex, gamma_hex)| {
+            let alpha = Scalar::from_hex(alpha_hex)
+                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid alpha hex: {}", e)))?;
+            let beta = Scalar::from_hex(beta_hex)
+                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid beta hex: {}", e)))?;
+            let gamma = Scalar::from_hex(gamma_hex)
+                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid gamma hex: {}", e)))?;
+            Ok(BlindingFactors { alpha, beta, gamma })
+        })
+        .collect::<Result<Vec<_>, actix_web::Error>>()?;
+
+    let pubkeys: Vec<PublicKey> = session_data.pubkeys
+        .iter()
+        .map(|pk_str| parse_pubkey(pk_str))
+        .collect();
+
+    let public_nonces: Vec<PubNonce> = session_data.pubnonces
+        .iter()
+        .map(|pn_str| PubNonce::from_hex(pn_str)
+            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid pubnonce hex: {}", e))))
+        .collect::<Result<Vec<_>, actix_web::Error>>()?;
+
+    // Recreate key aggregation context with the same parameters
+    let mut key_agg_ctx = KeyAggContext::new(pubkeys.clone(), Some(&coeff_salt))
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create key agg context: {}", e)))?;
+    let key_agg_ctx = key_agg_ctx.with_unspendable_taproot_tweak()
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to apply taproot tweak: {}", e)))?;
 
     // Create the same aggregated key as the original vault
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();

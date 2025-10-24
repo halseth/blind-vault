@@ -455,7 +455,7 @@ async fn initiate_vault_unvault(
         amount: vault_amount.to_sat(),
         timelock_blocks,
         recovery_addr,
-        session_data: Some(session_data),
+        session_data,
     };
 
     println!("Request: {:?}", body);
