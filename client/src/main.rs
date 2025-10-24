@@ -246,16 +246,6 @@ async fn sign_vault(
     let session_data = VaultSessionData {
         session_ids: sessions.iter().map(|s| s.session_id.clone()).collect(),
         coeff_salt: hex::encode(coeff_salt),
-        blinding_factors: blinding_factors
-            .iter()
-            .map(|fac| {
-                (
-                    hex::encode(fac.alpha),
-                    hex::encode(fac.beta),
-                    hex::encode(fac.gamma),
-                )
-            })
-            .collect(),
         pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
         pubnonces: sessions
             .iter()
