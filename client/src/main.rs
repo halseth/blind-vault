@@ -121,7 +121,7 @@ async fn sign_vault(
     let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
 
     let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt));
+        aggregate_pubs(&sessions, Some(&coeff_salt), 0);
 
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
@@ -282,7 +282,7 @@ async fn sign_unvault(
 
     let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
     let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt));
+        aggregate_pubs(&sessions, Some(&coeff_salt), 1);
 
     // Create the same aggregated key as the original vault
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
@@ -588,6 +588,7 @@ fn gen_blinding_factors(num_signers: usize) -> (Vec<BlindingFactors>, [u8; 32]) 
 fn aggregate_pubs(
     sessions: &Vec<SigningSession>,
     key_coeff_salt: Option<&[u8]>,
+    nonce_index: usize,
 ) -> (Vec<PublicKey>, Vec<PubNonce>, KeyAggContext, AggNonce) {
     let (pubkeys, public_nonces): (Vec<PublicKey>, Vec<PubNonce>) = sessions
         .iter()
@@ -595,8 +596,7 @@ fn aggregate_pubs(
             let resp = session.init_resp.clone();
             let pk = parse_pubkey(resp.pubkey.as_str());
             //println!("pk: {}", pk);
-            // Use the first nonce from the vector (for now)
-            let pn = PubNonce::from_hex(resp.pubnonces[0].as_str()).unwrap();
+            let pn = PubNonce::from_hex(resp.pubnonces[nonce_index].as_str()).unwrap();
             (pk, pn)
         })
         .collect();
