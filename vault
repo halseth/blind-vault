@@ -402,8 +402,17 @@ cmd_fund() {
     local deposit_tx=$(echo "$output" | grep "Raw deposit Transaction:" | awk '{print $4}')
     local recovery_tx=$(echo "$output" | grep "Raw recovery transaction:" | awk '{print $4}')
 
+    # Extract session data from output (between the markers)
+    local session_data=$(echo "$output" | sed -n '/=== VAULT SESSION DATA/,/=== END SESSION DATA ===/p' | sed '1d;$d' | tr -d '\n')
+
     if [ -z "$vault_addr" ] || [ -z "$deposit_tx" ]; then
         log_error "Failed to create vault deposit"
+        echo "$output"
+        exit 1
+    fi
+
+    if [ -z "$session_data" ]; then
+        log_error "Session data not found in depositor output"
         echo "$output"
         exit 1
     fi
@@ -443,6 +452,7 @@ cmd_fund() {
         --arg recovery_addr "$recovery_addr" \
         --arg vault_recovery_tx "$recovery_tx" \
         --arg deposit_tx "$deposit_tx" \
+        --arg session_data "$session_data" \
         '{
             id: $id,
             status: $status,
@@ -451,6 +461,7 @@ cmd_fund() {
             recovery_address: $recovery_addr,
             vault_recovery_tx: $vault_recovery_tx,
             deposit_tx: $deposit_tx,
+            session_data: $session_data,
             created_at: now
         }')
 
@@ -499,6 +510,13 @@ cmd_unvault() {
     local vault_vout=$(echo "$vault" | jq -r '.vault_utxo.vout')
     local vault_amount=$(echo "$vault" | jq -r '.vault_utxo.amount')
     local recovery_addr=$(echo "$vault" | jq -r '.recovery_address')
+    local session_data=$(echo "$vault" | jq -r '.session_data')
+
+    if [ -z "$session_data" ] || [ "$session_data" == "null" ]; then
+        log_error "Session data not found in vault state"
+        log_error "This vault may have been created with an older version"
+        exit 1
+    fi
 
     log_info "Vault UTXO: $vault_txid:$vault_vout ($vault_amount BTC)"
 
@@ -523,7 +541,7 @@ cmd_unvault() {
     local amount_sat=$(echo "$vault_amount * 100000000" | bc | cut -d'.' -f1)
 
     # Run depositor unvault command
-    log_info "Running: depositor unvault --vault-outpoint $vault_txid:$vault_vout --vault-amount \"$vault_amount BTC\" --destination-addr $dest_addr --timelock-blocks $timelock --recovery-addr $recovery_addr --client-url $CLIENT_URL --network $NETWORK"
+    log_info "Running: depositor unvault --vault-outpoint $vault_txid:$vault_vout --vault-amount \"$vault_amount BTC\" --destination-addr $dest_addr --timelock-blocks $timelock --recovery-addr $recovery_addr --session-data <JSON> --client-url $CLIENT_URL --network $NETWORK"
     cd depositor
     local output=$(cargo run --quiet -- unvault \
         --vault-outpoint "$vault_txid:$vault_vout" \
@@ -531,6 +549,7 @@ cmd_unvault() {
         --destination-addr "$dest_addr" \
         --timelock-blocks "$timelock" \
         --recovery-addr "$recovery_addr" \
+        --session-data "$session_data" \
         --client-url "$CLIENT_URL" \
         --network "$NETWORK" 2>&1)
     cd ..
