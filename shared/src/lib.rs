@@ -57,6 +57,7 @@ pub struct VaultUnvaultReq {
     pub amount: u64,
     pub timelock_blocks: u32,
     pub recovery_addr: String,
+    pub session_data: Option<VaultSessionData>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

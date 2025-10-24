@@ -275,6 +275,17 @@ async fn sign_unvault(
 ) -> actix_web::Result<impl Responder> {
     println!("Unvault request: {:?}", req);
 
+    // Print session data if provided
+    if let Some(ref session_data) = req.session_data {
+        println!("Received session data:");
+        println!("  - Coefficient salt: {}", session_data.coeff_salt);
+        println!("  - Number of pubkeys: {}", session_data.pubkeys.len());
+        println!("  - Number of pubnonces: {}", session_data.pubnonces.len());
+        println!("  - Number of blinding factors: {}", session_data.blinding_factors.len());
+    } else {
+        println!("WARNING: No session data provided - will create new signing session");
+    }
+
     let secp = Secp256k1::new();
     let cfg = data.cfg.clone();
     let args = Args::parse();

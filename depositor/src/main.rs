@@ -93,6 +93,10 @@ enum Commands {
         #[arg(long)]
         recovery_addr: String,
 
+        /// Session data from vault creation (JSON string)
+        #[arg(long)]
+        session_data: String,
+
         /// Client server URL
         #[arg(long)]
         client_url: SocketAddr,
@@ -137,6 +141,7 @@ async fn main() {
             destination_addr,
             timelock_blocks,
             recovery_addr,
+            session_data,
             client_url,
             network
         } => {
@@ -146,6 +151,7 @@ async fn main() {
                 destination_addr,
                 timelock_blocks,
                 recovery_addr,
+                session_data,
                 client_url,
                 network
             ).await;
@@ -366,6 +372,7 @@ async fn unvault(
     destination_addr: String,
     timelock_blocks: u32,
     recovery_addr: String,
+    session_data: String,
     client_url: SocketAddr,
     network: Network,
 ) {
@@ -377,6 +384,12 @@ async fn unvault(
     println!("Recovery address: {}", recovery_addr);
     println!("Client URL: {}", client_url);
     println!("Network: {}", network);
+
+    // Parse session data from JSON
+    let session_data: shared::VaultSessionData = serde_json::from_str(&session_data)
+        .expect("Failed to parse session data JSON");
+    println!("Session data loaded: {} pubkeys, {} nonces",
+        session_data.pubkeys.len(), session_data.pubnonces.len());
 
     // Validate destination address
     let _dest_addr = parse_address(&destination_addr, network);
@@ -390,6 +403,7 @@ async fn unvault(
         destination_addr,
         timelock_blocks,
         recovery_addr,
+        session_data,
     ).await {
         Ok(resp) => {
             println!("Unvault response: {:?}", resp);
@@ -427,6 +441,7 @@ async fn initiate_vault_unvault(
     destination_addr: String,
     timelock_blocks: u32,
     recovery_addr: String,
+    session_data: shared::VaultSessionData,
 ) -> Result<shared::VaultUnvaultResp, reqwest::Error> {
     use shared::VaultUnvaultReq;
 
@@ -440,6 +455,7 @@ async fn initiate_vault_unvault(
         amount: vault_amount.to_sat(),
         timelock_blocks,
         recovery_addr,
+        session_data: Some(session_data),
     };
 
     println!("Request: {:?}", body);
