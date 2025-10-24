@@ -595,7 +595,8 @@ fn aggregate_pubs(
             let resp = session.init_resp.clone();
             let pk = parse_pubkey(resp.pubkey.as_str());
             //println!("pk: {}", pk);
-            let pn = PubNonce::from_hex(resp.pubnonce.as_str()).unwrap();
+            // Use the first nonce from the vector (for now)
+            let pn = PubNonce::from_hex(resp.pubnonces[0].as_str()).unwrap();
             (pk, pn)
         })
         .collect();

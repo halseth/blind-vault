@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct InitResp {
     pub session_id: String,
     pub pubkey: String,
-    pub pubnonce: String,
+    pub pubnonces: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

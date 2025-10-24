@@ -28,7 +28,7 @@ struct SessionData {
     session_id: String,
     init_resp: InitResp,
     secret_key: SecretKey,
-    secret_nonce: SecNonce,
+    secret_nonces: Vec<SecNonce>,  // Vector of nonces, used and deleted in order
     recovery_addr: Option<String>,  // Committed recovery address
     used_for_tx_type: Option<String>, // Track what transaction type this session was used for
 }
@@ -86,23 +86,35 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
     let secp = Secp256k1::new();
     let secret_key = SecretKey::from_str( &data.args.priv_key ).unwrap();
     let pubkey = secret_key.public_key(&secp);
-    let secnonce = musig2::SecNonceBuilder::new(&mut rand::rngs::OsRng)
-        .with_message(&session_id)
-        .build();
 
-    let pubnonce = secnonce.public_nonce();
+    // Generate multiple nonces (2 for now) for this session
+    let num_nonces = 2;
+    let mut secret_nonces = Vec::new();
+    let mut pubnonces = Vec::new();
+
+    for i in 0..num_nonces {
+        // Create a unique message for each nonce by appending the index
+        let nonce_message = format!("{}:{}", session_id, i);
+        let secnonce = musig2::SecNonceBuilder::new(&mut rand::rngs::OsRng)
+            .with_message(&nonce_message)
+            .build();
+        let pubnonce = secnonce.public_nonce();
+
+        secret_nonces.push(secnonce);
+        pubnonces.push(hex::encode(pubnonce.serialize()));
+    }
 
     let resp = InitResp {
         session_id: session_id.clone(),
         pubkey: hex::encode(pubkey.serialize()),
-        pubnonce: hex::encode(pubnonce.serialize()),
+        pubnonces: pubnonces,
     };
 
     let session_data = SessionData {
         session_id: session_id.clone(),
         init_resp: resp.clone(),
         secret_key: secret_key.clone(),
-        secret_nonce: secnonce.clone(),
+        secret_nonces: secret_nonces,
         recovery_addr: None,
         used_for_tx_type: None,
     };
@@ -123,14 +135,25 @@ async fn session_sign(
     //println!("req: {:?}", req);
     let session_id = id.to_string();
 
-    // Delete all data about this session, ensuring we will never sign twice with same key.
-    let session = match data.sessions.lock().unwrap().remove(&session_id) {
-        None => return Err(ResourceNotFound.into()),
-        Some(s) => s,
-    };
+    // Get the next available nonce from the session
+    let (seckey, secnonce) = {
+        let mut sessions = data.sessions.lock().unwrap();
+        let session = match sessions.get_mut(&session_id) {
+            None => return Err(ResourceNotFound.into()),
+            Some(s) => s,
+        };
 
-    let seckey = session.secret_key;
-    let secnonce = session.secret_nonce;
+        if session.secret_nonces.is_empty() {
+            return Err(ErrorInternalServerError("No nonces available for this session"));
+        }
+
+        // Pop the first nonce from the vector (use and delete it)
+        let secnonce = session.secret_nonces.remove(0);
+        let seckey = session.secret_key.clone();
+
+        // If no more nonces remain, we'll remove the session after signing
+        (seckey, secnonce)
+    };
 
     let b = match MaybeScalar::from_hex(&req.b) {
         Ok(b) => b,
@@ -142,34 +165,33 @@ async fn session_sign(
         Err(e) => return Err(JsonPayloadError::Payload(PayloadError::EncodingCorrupted).into()),
     };
 
-    // Handle different transaction types and validate key usage
+    // Handle different transaction types
     match req.tx_type.as_str() {
         "VAULT" => {
             println!("Processing VAULT transaction");
             // Vault transactions are the initial deposit into the aggregated key
-            // This is typically the first use of a session for creating the vault
-            if session.used_for_tx_type.is_some() {
-                return Err(ErrorInternalServerError("Session already used for another transaction"));
-            }
-
-            // Here we sign a recovery ttransaction spending from an input we are part of.
+            // Here we sign a recovery transaction spending from an input we are part of.
+        },
+        "RECOVERY" => {
+            println!("Processing RECOVERY transaction");
+            // Recovery transactions spend to a committed recovery address
         },
         "UNVAULT" => {
             println!("Processing UNVAULT transaction");
             // Unvault transactions must derive a new key with proper script paths
-            // This session should be fresh (different from the vault creation session)
-            if session.used_for_tx_type.is_some() {
-                return Err(ErrorInternalServerError("Session already used for another transaction"));
-            }
-            
+
             // Derive the unvault public key with script tree tweak
-            let unvault_pubkey = derive_unvault_pubkey(&session.secret_key)?;
+            let unvault_pubkey = derive_unvault_pubkey(&seckey)?;
             println!("Derived unvault pubkey: {}", hex::encode(unvault_pubkey.serialize()));
 
             // Here we validate and sign three transactions:
             // 1) Unvault transaction spending to a new output with the same quorum
             // 2) Recovery transaction spending from the unvault transaction output back to the same recovery address
             // 3) Final timelocked transaction spending from the unvault transaction output
+        },
+        "FINAL" => {
+            println!("Processing FINAL transaction");
+            // Final timelocked spend transaction
         },
        t => {
            println!("type {} not found", t);
@@ -229,33 +251,15 @@ async fn session_sign(
         },
     };
 
-    // Mark the session as used for this transaction type
-    // For FINAL transactions, we allow reusing the UNVAULT session
-    if req.tx_type != "FINAL" {
-        data.sessions
-            .lock()
-            .unwrap()
-            .entry(session_id.clone())
-            .and_modify(|s| {
-                s.used_for_tx_type = Some(req.tx_type.clone());
-                
-                // Store transaction-specific data
-                match req.tx_type.as_str() {
-                    "RECOVERY" => {
-                        // Recovery address would be extracted from ZK proof validation
-                        s.recovery_addr = Some("extracted_from_zk_proof".to_string());
-                    },
-                    "VAULT" => {
-                        // Vault pubkey would be extracted from aggregation process
-                        // No additional storage needed for this session
-                    },
-                    "UNVAULT" => {
-                        // For unvault transactions, we use the same key validation
-                        // No additional storage needed for this session
-                    },
-                    _ => {}
-                }
-            });
+    // Clean up session if no more nonces remain
+    {
+        let mut sessions = data.sessions.lock().unwrap();
+        if let Some(session) = sessions.get(&session_id) {
+            if session.secret_nonces.is_empty() {
+                println!("Removing session {} - no nonces remaining", session_id);
+                sessions.remove(&session_id);
+            }
+        }
     }
 
     let resp = SignResp {
