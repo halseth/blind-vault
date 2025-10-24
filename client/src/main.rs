@@ -240,6 +240,7 @@ async fn sign_vault(
             .iter()
             .map(|s| s.init_resp.pubnonces.clone())
             .collect(),
+        timelock_blocks: req.timelock_blocks,
     };
 
     let resp = VaultDepositResp {
@@ -870,7 +871,7 @@ fn create_final_spend_transaction(
 
     let tx = Transaction {
         version: transaction::Version::TWO,
-        lock_time: absolute::LockTime::from_height(req.timelock_blocks).unwrap(),
+        lock_time: absolute::LockTime::from_height(req.session_data.timelock_blocks).unwrap(),
         input: vec![input],
         output: vec![output],
     };

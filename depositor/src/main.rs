@@ -67,6 +67,10 @@ enum Commands {
         #[arg(long)]
         priv_key: Option<String>,
 
+        /// Timelock height for the final spend transaction (in blocks)
+        #[arg(long)]
+        timelock_blocks: u32,
+
         /// Network to use.
         #[arg(long, default_value_t = Network::Signet)]
         network: Network,
@@ -84,10 +88,6 @@ enum Commands {
         /// Final destination address for the sweep transaction
         #[arg(long)]
         destination_addr: String,
-
-        /// Timelock height for the sweep transaction (in blocks)
-        #[arg(long)]
-        timelock_blocks: u32,
 
         /// Recovery address (fallback option)
         #[arg(long)]
@@ -121,6 +121,7 @@ async fn main() {
             change_amt,
             client_url,
             priv_key,
+            timelock_blocks,
             network
         } => {
             create_vault(
@@ -132,6 +133,7 @@ async fn main() {
                 change_amt,
                 client_url,
                 priv_key,
+                timelock_blocks,
                 network
             ).await;
         }
@@ -139,7 +141,6 @@ async fn main() {
             vault_outpoint,
             vault_amount,
             destination_addr,
-            timelock_blocks,
             recovery_addr,
             session_data,
             client_url,
@@ -149,7 +150,6 @@ async fn main() {
                 vault_outpoint,
                 vault_amount,
                 destination_addr,
-                timelock_blocks,
                 recovery_addr,
                 session_data,
                 client_url,
@@ -168,6 +168,7 @@ async fn create_vault(
     change_amt: Option<Amount>,
     client_url: Option<SocketAddr>,
     priv_key: Option<String>,
+    timelock_blocks: u32,
     network: Network,
 ) {
 
@@ -259,7 +260,7 @@ async fn create_vault(
     let psbt = Psbt::from_unsigned_tx(unsigned_tx).expect("Could not create PSBT");
 
     // Use the new vault deposit flow
-    let resp = initiate_vault_deposit(client_url.unwrap(), &psbt, recovery_addr.clone())
+    let resp = initiate_vault_deposit(client_url.unwrap(), &psbt, recovery_addr.clone(), timelock_blocks)
         .await
         .unwrap();
 
@@ -346,6 +347,7 @@ async fn initiate_vault_deposit(
     client_addr: SocketAddr,
     psbt: &Psbt,
     recovery_addr: String,
+    timelock_blocks: u32,
 ) -> Result<VaultDepositResp, reqwest::Error> {
     let client = reqwest::Client::new();
     let url = format!("http://{}/vault", client_addr);
@@ -356,6 +358,7 @@ async fn initiate_vault_deposit(
     let body = VaultDepositReq {
         deposit_psbt: psbt.clone(),
         recovery_addr,
+        timelock_blocks,
     };
     let resp = client.post(url).json(&body).send().await?;
     println!("{resp:#?}");
@@ -370,7 +373,6 @@ async fn unvault(
     vault_outpoint: OutPoint,
     vault_amount: Amount,
     destination_addr: String,
-    timelock_blocks: u32,
     recovery_addr: String,
     session_data: String,
     client_url: SocketAddr,
@@ -380,7 +382,6 @@ async fn unvault(
     println!("Vault outpoint: {}", vault_outpoint);
     println!("Vault amount: {}", vault_amount);
     println!("Destination address: {}", destination_addr);
-    println!("Timelock blocks: {}", timelock_blocks);
     println!("Recovery address: {}", recovery_addr);
     println!("Client URL: {}", client_url);
     println!("Network: {}", network);
@@ -388,8 +389,8 @@ async fn unvault(
     // Parse session data from JSON
     let session_data: shared::VaultSessionData = serde_json::from_str(&session_data)
         .expect("Failed to parse session data JSON");
-    println!("Session data loaded: {} pubkeys, {} nonces",
-        session_data.pubkeys.len(), session_data.pubnonces.len());
+    println!("Session data loaded: {} pubkeys, {} nonces, timelock: {} blocks",
+        session_data.pubkeys.len(), session_data.pubnonces.len(), session_data.timelock_blocks);
 
     // Validate destination address
     let _dest_addr = parse_address(&destination_addr, network);
@@ -401,7 +402,6 @@ async fn unvault(
         vault_outpoint,
         vault_amount,
         destination_addr,
-        timelock_blocks,
         recovery_addr,
         session_data,
     ).await {
@@ -439,7 +439,6 @@ async fn initiate_vault_unvault(
     vault_outpoint: OutPoint,
     vault_amount: Amount,
     destination_addr: String,
-    timelock_blocks: u32,
     recovery_addr: String,
     session_data: shared::VaultSessionData,
 ) -> Result<shared::VaultUnvaultResp, reqwest::Error> {
@@ -453,7 +452,6 @@ async fn initiate_vault_unvault(
         vault_outpoint: vault_outpoint.to_string(),
         destination_addr,
         amount: vault_amount.to_sat(),
-        timelock_blocks,
         recovery_addr,
         session_data,
     };

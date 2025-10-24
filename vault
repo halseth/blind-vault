@@ -374,6 +374,13 @@ cmd_fund() {
         exit 1
     fi
 
+    # Prompt for timelock
+    read -p "Enter timelock for final spend (in blocks): " timelock
+    if [ -z "$timelock" ]; then
+        log_error "Timelock is required"
+        exit 1
+    fi
+
     # Calculate output amount (subtract fee)
     local output_amt=$(echo "$amount - 0.00001" | bc)
 
@@ -381,17 +388,19 @@ cmd_fund() {
     log_info "  Input: $txid:$vout ($amount BTC)"
     log_info "  Output: $output_amt BTC"
     log_info "  Recovery address: $recovery_addr"
+    log_info "  Timelock: $timelock blocks"
 
     # Private key already extracted from get_wallet_key
 
     # Run depositor create command
-    log_info "Running: depositor create --prevout $txid:$vout --prev-amt \"$amount BTC\" --output-amt \"$output_amt BTC\" --recovery-addr $recovery_addr --client-url $CLIENT_URL --priv-key [REDACTED] --network $NETWORK"
+    log_info "Running: depositor create --prevout $txid:$vout --prev-amt \"$amount BTC\" --output-amt \"$output_amt BTC\" --recovery-addr $recovery_addr --timelock-blocks $timelock --client-url $CLIENT_URL --priv-key [REDACTED] --network $NETWORK"
     cd depositor
     local output=$(cargo run --quiet -- create \
         --prevout "$txid:$vout" \
         --prev-amt "$amount BTC" \
         --output-amt "$output_amt BTC" \
         --recovery-addr "$recovery_addr" \
+        --timelock-blocks "$timelock" \
         --client-url "$CLIENT_URL" \
         --priv-key "$priv_key" \
         --network "$NETWORK" 2>&1)
@@ -520,16 +529,14 @@ cmd_unvault() {
 
     log_info "Vault UTXO: $vault_txid:$vault_vout ($vault_amount BTC)"
 
-    # Prompt for destination and timelock
+    # Extract timelock from session data
+    local timelock=$(echo "$session_data" | jq -r '.timelock_blocks')
+    log_info "Timelock (from vault creation): $timelock blocks"
+
+    # Prompt for destination address
     read -p "Enter destination address: " dest_addr
     if [ -z "$dest_addr" ]; then
         log_error "Destination address is required"
-        exit 1
-    fi
-
-    read -p "Enter timelock (in blocks): " timelock
-    if [ -z "$timelock" ]; then
-        log_error "Timelock is required"
         exit 1
     fi
 
@@ -541,13 +548,12 @@ cmd_unvault() {
     local amount_sat=$(echo "$vault_amount * 100000000" | bc | cut -d'.' -f1)
 
     # Run depositor unvault command
-    log_info "Running: depositor unvault --vault-outpoint $vault_txid:$vault_vout --vault-amount \"$vault_amount BTC\" --destination-addr $dest_addr --timelock-blocks $timelock --recovery-addr $recovery_addr --session-data <JSON> --client-url $CLIENT_URL --network $NETWORK"
+    log_info "Running: depositor unvault --vault-outpoint $vault_txid:$vault_vout --vault-amount \"$vault_amount BTC\" --destination-addr $dest_addr --recovery-addr $recovery_addr --session-data <JSON> --client-url $CLIENT_URL --network $NETWORK"
     cd depositor
     local output=$(cargo run --quiet -- unvault \
         --vault-outpoint "$vault_txid:$vault_vout" \
         --vault-amount "$vault_amount BTC" \
         --destination-addr "$dest_addr" \
-        --timelock-blocks "$timelock" \
         --recovery-addr "$recovery_addr" \
         --session-data "$session_data" \
         --client-url "$CLIENT_URL" \

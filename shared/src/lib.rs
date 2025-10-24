@@ -30,6 +30,7 @@ pub struct SignResp {
 pub struct VaultDepositReq {
     pub deposit_psbt: Psbt,
     pub recovery_addr: String,
+    pub timelock_blocks: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -46,6 +47,7 @@ pub struct VaultSessionData {
     pub coeff_salt: String,
     pub pubkeys: Vec<String>,
     pub pubnonces: Vec<Vec<String>>,  // Outer vec: per signer, Inner vec: per nonce
+    pub timelock_blocks: u32,
 }
 
 
@@ -55,7 +57,6 @@ pub struct VaultUnvaultReq {
     pub vault_outpoint: String,
     pub destination_addr: String,
     pub amount: u64,
-    pub timelock_blocks: u32,
     pub recovery_addr: String,
     pub session_data: VaultSessionData,
 }
