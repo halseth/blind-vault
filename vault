@@ -162,8 +162,8 @@ get_active_vault() {
         return
     fi
 
-    # Otherwise get first active vault
-    jq -r '.vaults | map(select(.status != "finalized" and .status != "recovered")) | .[0] // empty' "$STATE_FILE"
+    # Otherwise get newest active vault (by created_at timestamp)
+    jq -r '.vaults | map(select(.status != "finalized" and .status != "recovered")) | sort_by(.created_at) | .[-1] // empty' "$STATE_FILE"
 }
 
 add_vault() {
