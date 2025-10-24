@@ -118,7 +118,7 @@ async fn sign_vault(
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
 
-    let (blinding_factors, coeff_salt) = gen_blinding_factors(num_signers);
+    let coeff_salt = gen_coeff_salt();
 
     let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
         aggregate_pubs(&sessions, Some(&coeff_salt), 0);
@@ -204,7 +204,6 @@ async fn sign_vault(
         sessions.clone(),
         &key_agg_ctx,
         tweaked_aggregated_pubkey,
-        &blinding_factors,
         &pubkeys,
         &public_nonces,
         &coeff_salt,
@@ -322,9 +321,6 @@ async fn sign_unvault(
 
     let num_signers = vault_sessions.len();
 
-    // Generate blinding factors for signing the unvault input
-    let (vault_blinding_factors, _) = gen_blinding_factors(num_signers);
-
     // Aggregate vault pubkeys and nonces using stored coeff_salt and nonce index 1
     // (nonce index 0 was used for vault recovery tx)
     let (vault_pubkeys, vault_public_nonces, vault_key_agg_ctx, _) =
@@ -342,8 +338,8 @@ async fn sign_unvault(
     println!("\nInitializing new sessions for unvault output...");
     let unvault_sessions = init_signer_sessions(&cfg).await?;
 
-    // Generate new blinding factors and coeff_salt for unvault output
-    let (unvault_blinding_factors, unvault_coeff_salt) = gen_blinding_factors(num_signers);
+    // Generate new coeff_salt for unvault output (fresh aggregate key)
+    let unvault_coeff_salt = gen_coeff_salt();
 
     // Aggregate pubkeys for the NEW unvault output key (using nonce index 0 from fresh sessions)
     let (unvault_pubkeys, unvault_public_nonces, unvault_key_agg_ctx, _) =
@@ -380,7 +376,6 @@ async fn sign_unvault(
         vault_sessions.clone(),
         &vault_key_agg_ctx,
         vault_tweaked_pubkey,
-        &vault_blinding_factors,
         &vault_pubkeys,
         &vault_public_nonces,
         &vault_coeff_salt,
@@ -400,7 +395,6 @@ async fn sign_unvault(
         unvault_sessions.clone(),
         &unvault_key_agg_ctx,
         unvault_tweaked_pubkey,
-        &unvault_blinding_factors,
         &unvault_pubkeys,
         &unvault_public_nonces,
         &unvault_coeff_salt,
@@ -411,7 +405,6 @@ async fn sign_unvault(
 
     // Sign final spend transaction (spending from unvault output to destination, timelocked)
     // Note: We need to use nonce index 1 for this since we just consumed nonce 0 for recovery
-    let (final_blinding_factors, _) = gen_blinding_factors(num_signers);
     let (_, final_public_nonces, _, _) = aggregate_pubs(&unvault_sessions, Some(&unvault_coeff_salt), 1);
 
     println!("\nSigning final spend transaction (timelocked)...");
@@ -420,7 +413,6 @@ async fn sign_unvault(
         unvault_sessions.clone(),
         &unvault_key_agg_ctx,
         unvault_tweaked_pubkey,
-        &final_blinding_factors,
         &unvault_pubkeys,
         &final_public_nonces,
         &unvault_coeff_salt,
@@ -663,7 +655,7 @@ struct BlindingFactors {
     gamma: Scalar,
 }
 
-fn gen_blinding_factors(num_signers: usize) -> (Vec<BlindingFactors>, [u8; 32]) {
+fn gen_blinding_factors(num_signers: usize) -> Vec<BlindingFactors> {
     let blinding_seed = rand::thread_rng().random::<[u8; 32]>();
     let mut blinding_factors = vec![];
     for i in 0..num_signers {
@@ -699,14 +691,11 @@ fn gen_blinding_factors(num_signers: usize) -> (Vec<BlindingFactors>, [u8; 32]) 
         });
     }
 
-    let coeff_salt: [u8; 32] = Sha256::new()
-        .chain_update(blinding_seed)
-        .chain_update(&(num_signers as u32).to_be_bytes())
-        .chain_update(&(3 as u32).to_be_bytes())
-        .finalize()
-        .into();
+    blinding_factors
+}
 
-    (blinding_factors, coeff_salt)
+fn gen_coeff_salt() -> [u8; 32] {
+    rand::thread_rng().random::<[u8; 32]>()
 }
 
 fn aggregate_pubs(
@@ -912,7 +901,6 @@ async fn sign_psbt(
     sessions: Vec<SigningSession>,
     key_agg_ctx: &KeyAggContext,
     tweaked_aggregated_pubkey: Point,
-    blinding_factors: &Vec<BlindingFactors>,
     pubkeys: &Vec<PublicKey>,
     public_nonces: &Vec<PubNonce>,
     coeff_salt: &[u8; 32],
@@ -927,6 +915,10 @@ async fn sign_psbt(
     println!("Signing PSBT with tx_type: {}", tx_type);
     println!("msg: {:?}", msg);
     println!("sighash_type: {:?}", sighash_type);
+
+    // Generate fresh blinding factors for this signing operation
+    let num_signers = sessions.len();
+    let blinding_factors = gen_blinding_factors(num_signers);
 
     // Calculate blinding factor adjustments
     let aas: MaybeScalar = blinding_factors.iter().map(|fac| fac.alpha).sum();
