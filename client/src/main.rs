@@ -298,57 +298,80 @@ async fn sign_unvault(
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid recovery address: {}", e)))?
         .assume_checked();
 
-    // Reuse session data from vault deposit
-    let session_data = &req.session_data;
-    println!("Reusing sessions from vault deposit:");
-    println!("  - Session IDs: {:?}", session_data.session_ids);
-    println!("  - Coefficient salt: {}", session_data.coeff_salt);
-    println!("  - Number of signers: {}", session_data.pubkeys.len());
+    // ========== PART 1: Reconstruct vault sessions to sign the unvault INPUT ==========
 
-    // Parse stored coeff_salt
-    let coeff_salt: [u8; 32] = hex::decode(&session_data.coeff_salt)
+    let vault_session_data = &req.session_data;
+    println!("Reusing vault sessions to sign unvault input:");
+    println!("  - Session IDs: {:?}", vault_session_data.session_ids);
+    println!("  - Coefficient salt: {}", vault_session_data.coeff_salt);
+    println!("  - Number of signers: {}", vault_session_data.pubkeys.len());
+
+    // Parse stored vault coeff_salt
+    let vault_coeff_salt: [u8; 32] = hex::decode(&vault_session_data.coeff_salt)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid coeff_salt hex: {}", e)))?
         .try_into()
         .map_err(|_| actix_web::error::ErrorBadRequest("coeff_salt must be 32 bytes"))?;
 
-    // Reconstruct signing sessions from stored data
-    let sessions: Vec<SigningSession> = cfg.signers
+    // Reconstruct vault signing sessions from stored data
+    let vault_sessions: Vec<SigningSession> = cfg.signers
         .iter()
         .enumerate()
         .map(|(i, signer)| {
             let init_resp = InitResp {
-                session_id: session_data.session_ids[i].clone(),
-                pubkey: session_data.pubkeys[i].clone(),
-                pubnonces: session_data.pubnonces[i].clone(),
+                session_id: vault_session_data.session_ids[i].clone(),
+                pubkey: vault_session_data.pubkeys[i].clone(),
+                pubnonces: vault_session_data.pubnonces[i].clone(),
             };
             SigningSession {
                 signer: signer.clone(),
-                session_id: session_data.session_ids[i].clone(),
+                session_id: vault_session_data.session_ids[i].clone(),
                 init_resp,
             }
         })
         .collect();
 
-    let num_signers = sessions.len();
+    let num_signers = vault_sessions.len();
 
-    // Generate NEW blinding factors for this signing operation
-    let (blinding_factors, _) = gen_blinding_factors(num_signers);
+    // Generate blinding factors for signing the unvault input
+    let (vault_blinding_factors, _) = gen_blinding_factors(num_signers);
 
-    // Aggregate pubkeys and nonces using stored coeff_salt and nonce index 1
+    // Aggregate vault pubkeys and nonces using stored coeff_salt and nonce index 1
     // (nonce index 0 was used for vault recovery tx)
-    let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt), 1);
+    let (vault_pubkeys, vault_public_nonces, vault_key_agg_ctx, _) =
+        aggregate_pubs(&vault_sessions, Some(&vault_coeff_salt), 1);
 
-    // Create the same aggregated key as the original vault
-    let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
-    let pk = bitcoin::secp256k1::PublicKey::from_slice(&untweaked_aggregated_pubkey.serialize())
+    // Get the vault aggregated key (to verify we're spending from the right vault)
+    let vault_untweaked_pubkey: Point = vault_key_agg_ctx.aggregated_pubkey_untweaked();
+    let vault_pk = bitcoin::secp256k1::PublicKey::from_slice(&vault_untweaked_pubkey.serialize())
         .unwrap();
-    let (xpub, _) = pk.x_only_public_key();
+    let (vault_xpub, _) = vault_pk.x_only_public_key();
+    println!("Vault aggregated pubkey (input): {}", vault_xpub);
 
-    println!("Unvault aggregated pubkey: {}", xpub);
+    // ========== PART 2: Initialize NEW sessions for the unvault OUTPUT ==========
 
-    // Create the three transactions
-    let unvault_psbt = create_unvault_transaction(&req, &secp, xpub, args.static_fee)?;
+    println!("\nInitializing new sessions for unvault output...");
+    let unvault_sessions = init_signer_sessions(&cfg).await?;
+
+    // Generate new blinding factors and coeff_salt for unvault output
+    let (unvault_blinding_factors, unvault_coeff_salt) = gen_blinding_factors(num_signers);
+
+    // Aggregate pubkeys for the NEW unvault output key (using nonce index 0 from fresh sessions)
+    let (unvault_pubkeys, unvault_public_nonces, unvault_key_agg_ctx, _) =
+        aggregate_pubs(&unvault_sessions, Some(&unvault_coeff_salt), 0);
+
+    // Get the NEW aggregated key for the unvault output
+    let unvault_untweaked_pubkey: Point = unvault_key_agg_ctx.aggregated_pubkey_untweaked();
+    let unvault_pk = bitcoin::secp256k1::PublicKey::from_slice(&unvault_untweaked_pubkey.serialize())
+        .unwrap();
+    let (unvault_xpub, _) = unvault_pk.x_only_public_key();
+    println!("Unvault aggregated pubkey (output): {}", unvault_xpub);
+
+    // ========== PART 3: Create transactions using the NEW unvault key ==========
+
+    // Create unvault transaction: spends from vault (input), outputs to NEW unvault key
+    let unvault_psbt = create_unvault_transaction(&req, &secp, vault_xpub, unvault_xpub, args.static_fee)?;
+
+    // Create recovery and final spend: both spend from the NEW unvault output
     let recovery_psbt = create_recovery_transaction(&req, &unvault_psbt, &recovery_addr, args.static_fee)?;
     let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt, &destination_addr, args.static_fee)?;
 
@@ -357,34 +380,70 @@ async fn sign_unvault(
     println!("Recovery PSBT: {:?}", recovery_psbt.unsigned_tx);
     println!("Final spend PSBT: {:?}", final_spend_psbt.unsigned_tx);
 
-    // Get the tweaked aggregated pubkey for signing
-    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+    // ========== PART 4: Sign the unvault transaction (input with vault key) ==========
 
-    // Sign the unvault PSBT
-    println!("Signing unvault transaction...");
+    let vault_tweaked_pubkey: Point = vault_key_agg_ctx.aggregated_pubkey();
+
+    println!("\nSigning unvault transaction (spending from vault)...");
     let signed_unvault_psbt = sign_psbt(
         unvault_psbt,
-        sessions.clone(),
-        &key_agg_ctx,
-        tweaked_aggregated_pubkey,
-        &blinding_factors,
-        &pubkeys,
-        &public_nonces,
-        &coeff_salt,
+        vault_sessions.clone(),
+        &vault_key_agg_ctx,
+        vault_tweaked_pubkey,
+        &vault_blinding_factors,
+        &vault_pubkeys,
+        &vault_public_nonces,
+        &vault_coeff_salt,
         "UNVAULT",
     )
     .await?;
     println!("✓ Unvault transaction signed");
 
-    // TODO: Sign recovery and final spend transactions
-    // For now, return unsigned recovery and final spend
-    println!("Warning: Recovery and final spend transactions not yet signed");
+    // ========== PART 5: Sign recovery and final spend (outputs with NEW unvault key) ==========
+
+    let unvault_tweaked_pubkey: Point = unvault_key_agg_ctx.aggregated_pubkey();
+
+    // Sign recovery transaction (spending from unvault output to recovery address)
+    println!("\nSigning recovery transaction (spending from unvault)...");
+    let signed_recovery_psbt = sign_psbt(
+        recovery_psbt,
+        unvault_sessions.clone(),
+        &unvault_key_agg_ctx,
+        unvault_tweaked_pubkey,
+        &unvault_blinding_factors,
+        &unvault_pubkeys,
+        &unvault_public_nonces,
+        &unvault_coeff_salt,
+        "RECOVERY",
+    )
+    .await?;
+    println!("✓ Recovery transaction signed");
+
+    // Sign final spend transaction (spending from unvault output to destination, timelocked)
+    // Note: We need to use nonce index 1 for this since we just consumed nonce 0 for recovery
+    let (final_blinding_factors, _) = gen_blinding_factors(num_signers);
+    let (_, final_public_nonces, _, _) = aggregate_pubs(&unvault_sessions, Some(&unvault_coeff_salt), 1);
+
+    println!("\nSigning final spend transaction (timelocked)...");
+    let signed_final_spend_psbt = sign_psbt(
+        final_spend_psbt,
+        unvault_sessions.clone(),
+        &unvault_key_agg_ctx,
+        unvault_tweaked_pubkey,
+        &final_blinding_factors,
+        &unvault_pubkeys,
+        &final_public_nonces,
+        &unvault_coeff_salt,
+        "FINAL",
+    )
+    .await?;
+    println!("✓ Final spend transaction signed");
 
     let resp = VaultUnvaultResp {
         unvault_psbt: signed_unvault_psbt,
-        recovery_psbt,
-        final_spend_psbt,
-        unvault_pubkey: xpub.to_string(),
+        recovery_psbt: signed_recovery_psbt,
+        final_spend_psbt: signed_final_spend_psbt,
+        unvault_pubkey: unvault_xpub.to_string(),
     };
 
     Ok(web::Json(resp))
@@ -702,6 +761,7 @@ fn parse_pubkey(pub_str: &str) -> PublicKey {
 fn create_unvault_transaction(
     req: &VaultUnvaultReq,
     secp: &Secp256k1<All>,
+    vault_pubkey: XOnlyPublicKey,
     unvault_pubkey: XOnlyPublicKey,
     static_fee: Amount,
 ) -> actix_web::Result<Psbt> {
@@ -743,8 +803,8 @@ fn create_unvault_transaction(
         actix_web::error::ErrorInternalServerError(format!("Failed to create PSBT: {}", e))
     })?;
 
-    // Add witness_utxo for the vault input
-    let vault_script = ScriptBuf::new_p2tr(secp, unvault_pubkey, None);
+    // Add witness_utxo for the vault input (spending FROM vault pubkey)
+    let vault_script = ScriptBuf::new_p2tr(secp, vault_pubkey, None);
     psbt.inputs[0].witness_utxo = Some(TxOut {
         value: Amount::from_sat(req.amount)
             .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid amount: {}", e)))?,
