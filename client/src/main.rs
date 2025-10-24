@@ -22,8 +22,8 @@ use secp256k1::{PublicKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{
-    InitResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, VaultUnvaultReq,
-    VaultUnvaultResp,
+    InitResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, VaultSessionData,
+    VaultUnvaultReq, VaultUnvaultResp,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -242,10 +242,28 @@ async fn sign_vault(
     //        .insert(s.session_id, session_data);
     //});
 
+    // Prepare session data to return to depositor for later use during unvault
+    let session_data = VaultSessionData {
+        coeff_salt: hex::encode(coeff_salt),
+        blinding_factors: blinding_factors
+            .iter()
+            .map(|fac| {
+                (
+                    hex::encode(fac.alpha),
+                    hex::encode(fac.beta),
+                    hex::encode(fac.gamma),
+                )
+            })
+            .collect(),
+        pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
+        pubnonces: public_nonces.iter().map(|pn| pn.to_string()).collect(),
+    };
+
     let resp = VaultDepositResp {
         deposit_psbt: deposit_psbt,
         recovery_psbt: recovery_psbt,
         vault_address: tap.to_string(),
+        session_data,
     };
     Ok(web::Json(resp))
 }

@@ -37,6 +37,15 @@ pub struct VaultDepositResp {
     pub deposit_psbt: Psbt,
     pub recovery_psbt: Psbt,
     pub vault_address: String,
+    pub session_data: VaultSessionData,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VaultSessionData {
+    pub coeff_salt: String,
+    pub blinding_factors: Vec<(String, String, String)>,
+    pub pubkeys: Vec<String>,
+    pub pubnonces: Vec<String>,
 }
 
 

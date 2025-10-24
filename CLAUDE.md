@@ -52,6 +52,15 @@ cd depositor/
 cargo run -- --prevout "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:262" --prev-amt "0.00190943 BTC" --output-amt "0.0019 BTC" --client-url "127.0.0.1:8090" --priv-key "8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f" --fallback-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3"
 ```
 
+## Workflow Preferences
+
+### Git Commits
+
+- **Always ask the user to review the commit message before committing**
+- Present the proposed commit message and wait for approval or edits before running `git commit`
+- **Never reference Claude in commit messages**
+- Do not include "Generated with Claude Code" footers or "Co-Authored-By: Claude" trailers
+
 ## Architecture
 
 ### Component Structure
