@@ -260,6 +260,13 @@ async fn create_vault(
     println!("Vault deposit response: {:?}", resp);
     println!("Vault address: {}", resp.vault_address);
 
+    // Print session data as compact JSON for later use during unvault
+    let session_json = serde_json::to_string(&resp.session_data)
+        .expect("Failed to serialize session data");
+    println!("\n=== VAULT SESSION DATA (save this for unvault) ===");
+    println!("{}", session_json);
+    println!("=== END SESSION DATA ===\n");
+
     // Extract the pre-signed recovery transaction
     let recovery_tx = resp.recovery_psbt.extract_tx().expect("valid recovery tx");
     let mut deposit_psbt = resp.deposit_psbt;
