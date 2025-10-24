@@ -2,7 +2,6 @@ use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer, Responder, Result, post, web};
 use bitcoin::address::script_pubkey::ScriptBufExt;
 use bitcoin::consensus_validation::TransactionExt;
-use bitcoin::hashes::Hash;
 use bitcoin::psbt::Input;
 use bitcoin::secp256k1::{All, Secp256k1, XOnlyPublicKey};
 use bitcoin::sighash::SighashCache;
@@ -25,11 +24,10 @@ use shared::{
     InitResp, SignReq, SignResp, VaultDepositReq, VaultDepositResp, VaultSessionData,
     VaultUnvaultReq, VaultUnvaultResp,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Mutex;
 
 #[derive(Debug, Parser)]
 #[command(verbatim_doc_comment)]
@@ -56,14 +54,7 @@ struct Config {
 
 // This struct represents state
 struct AppState {
-    sessions: Mutex<HashMap<String, SessionData>>,
     cfg: Config,
-}
-
-#[derive(Clone, Debug)]
-struct SessionData {
-    session_id: String,
-    signing_session: SigningSession,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -88,7 +79,6 @@ async fn main() -> std::io::Result<()> {
     println!("listening on {}", bind);
 
     let app_state = web::Data::new(AppState {
-        sessions: Mutex::new(HashMap::new()),
         cfg: cfg,
     });
     HttpServer::new(move || {
@@ -444,7 +434,7 @@ async fn init_signer_sessions(
     let mut sessions = vec![];
 
     for s in &cfg.signers {
-        let id = hex::encode(rand::thread_rng().random::<[u8; 32]>());
+        let id = hex::encode(rand::rng().random::<[u8; 32]>());
         let resp = reqwest::get(format!("http://{s}/init/{id}"))
             .await?
             .json::<InitResp>()
@@ -656,7 +646,7 @@ struct BlindingFactors {
 }
 
 fn gen_blinding_factors(num_signers: usize) -> Vec<BlindingFactors> {
-    let blinding_seed = rand::thread_rng().random::<[u8; 32]>();
+    let blinding_seed = rand::rng().random::<[u8; 32]>();
     let mut blinding_factors = vec![];
     for i in 0..num_signers {
         let blind_hash0: [u8; 32] = Sha256::new()
@@ -695,7 +685,7 @@ fn gen_blinding_factors(num_signers: usize) -> Vec<BlindingFactors> {
 }
 
 fn gen_coeff_salt() -> [u8; 32] {
-    rand::thread_rng().random::<[u8; 32]>()
+    rand::rng().random::<[u8; 32]>()
 }
 
 fn aggregate_pubs(
@@ -1019,55 +1009,3 @@ async fn sign_psbt(
 }
 
 // Helper function to request recovery signatures from signers
-async fn request_recovery_signatures(
-    sessions: &[SigningSession],
-    key_agg_ctx: &KeyAggContext,
-    blinding_factors: &[BlindingFactors],
-    pubkeys: &[PublicKey],
-    public_nonces: &[PubNonce],
-    coeff_salt: &[u8],
-    recovery_psbt: Psbt,
-) -> Result<Psbt, Box<dyn std::error::Error>> {
-    // This would implement the blind signing protocol for the recovery transaction
-    // For now, return the unsigned PSBT as we haven't fully implemented the signing
-    // In a real implementation, this would:
-    // 1. Extract sighash from recovery PSBT
-    // 2. Call request_partial_sigs with "RECOVERY" transaction type
-    // 3. Aggregate the partial signatures
-    // 4. Return the fully signed recovery PSBT
-
-    println!("Requesting recovery signatures for vault deposit");
-
-    // TODO: Extract message/sighash from recovery PSBT and call request_partial_sigs
-    // with "RECOVERY" transaction type once PSBT signing is fully integrated
-
-    Ok(recovery_psbt)
-}
-
-// Helper function to request unvault signatures from signers
-async fn request_unvault_signatures(
-    sessions: &[SigningSession],
-    key_agg_ctx: &KeyAggContext,
-    blinding_factors: &[BlindingFactors],
-    pubkeys: &[PublicKey],
-    public_nonces: &[PubNonce],
-    coeff_salt: &[u8],
-    unvault_psbt: Psbt,
-    final_spend_psbt: Psbt,
-) -> Result<(Psbt, Psbt), Box<dyn std::error::Error>> {
-    // This would implement the blind signing protocol for unvault transactions
-    // For now, return the unsigned PSBTs
-    // In a real implementation, this would:
-    // 1. Extract sighashes from both PSBTs
-    // 2. Call request_partial_sigs with "UNVAULT" for the first transaction
-    // 3. Call request_partial_sigs with "FINAL" for the second transaction
-    // 4. Aggregate the partial signatures for both transactions
-    // 5. Return the fully signed PSBTs
-
-    println!("Requesting unvault signatures for unvault and final spend transactions");
-
-    // TODO: Extract messages/sighashes from both PSBTs and call request_partial_sigs
-    // with appropriate transaction types ("UNVAULT" and "FINAL")
-
-    Ok((unvault_psbt, final_spend_psbt))
-}

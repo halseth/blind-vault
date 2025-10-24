@@ -4,16 +4,13 @@ use actix_web::{App, HttpServer, Responder, Result, get, post, web};
 use clap::Parser;
 use hex::ToHex;
 use musig2::SecNonce;
-use musig2::secp::{MaybeScalar, Scalar};
+use musig2::secp::MaybeScalar;
 use secp256k1::{Secp256k1, SecretKey, PublicKey, rand};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io::Write;
 use std::net::SocketAddr;
-use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::Mutex;
 
@@ -25,12 +22,8 @@ struct AppState {
 
 #[derive(Clone, Debug)]
 struct SessionData {
-    session_id: String,
-    init_resp: InitResp,
     secret_key: SecretKey,
     secret_nonces: Vec<SecNonce>,  // Vector of nonces, used and deleted in order
-    recovery_addr: Option<String>,  // Committed recovery address
-    used_for_tx_type: Option<String>, // Track what transaction type this session was used for
 }
 
 #[derive(Debug, Parser)]
@@ -111,12 +104,8 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
     };
 
     let session_data = SessionData {
-        session_id: session_id.clone(),
-        init_resp: resp.clone(),
         secret_key: secret_key.clone(),
         secret_nonces: secret_nonces,
-        recovery_addr: None,
-        used_for_tx_type: None,
     };
 
     data.sessions

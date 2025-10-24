@@ -16,7 +16,7 @@ use bitcoin::{
     Address, Amount, Network, OutPoint, PrivateKey, Psbt, ScriptBuf, Sequence, TapSighashType,
     Transaction, TxIn, TxOut, Witness, consensus, transaction,
 };
-use shared::{VaultDepositReq, VaultDepositResp, VaultUnvaultReq, VaultUnvaultResp};
+use shared::{VaultDepositReq, VaultDepositResp};
 
 fn parse_address(addr: &str, network: Network) -> Address {
     Address::from_str(addr)
