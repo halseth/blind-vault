@@ -201,7 +201,7 @@ async fn sign_vault(
     // Sign the recovery PSBT using the extracted method
     let recovery_psbt = sign_psbt(
         recovery_psbt,
-        sessions,
+        sessions.clone(),
         &key_agg_ctx,
         tweaked_aggregated_pubkey,
         &blinding_factors,
@@ -244,6 +244,7 @@ async fn sign_vault(
 
     // Prepare session data to return to depositor for later use during unvault
     let session_data = VaultSessionData {
+        session_ids: sessions.iter().map(|s| s.session_id.clone()).collect(),
         coeff_salt: hex::encode(coeff_salt),
         blinding_factors: blinding_factors
             .iter()
@@ -256,7 +257,10 @@ async fn sign_vault(
             })
             .collect(),
         pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
-        pubnonces: public_nonces.iter().map(|pn| pn.to_string()).collect(),
+        pubnonces: sessions
+            .iter()
+            .map(|s| s.init_resp.pubnonces.clone())
+            .collect(),
     };
 
     let resp = VaultDepositResp {
@@ -296,47 +300,44 @@ async fn sign_unvault(
 
     // Reuse session data from vault deposit
     let session_data = &req.session_data;
-    println!("Reusing session data from vault deposit:");
+    println!("Reusing sessions from vault deposit:");
+    println!("  - Session IDs: {:?}", session_data.session_ids);
     println!("  - Coefficient salt: {}", session_data.coeff_salt);
-    println!("  - Number of pubkeys: {}", session_data.pubkeys.len());
-    println!("  - Number of pubnonces: {}", session_data.pubnonces.len());
-    println!("  - Number of blinding factors: {}", session_data.blinding_factors.len());
+    println!("  - Number of signers: {}", session_data.pubkeys.len());
 
-    // Parse session data from hex strings
+    // Parse stored coeff_salt
     let coeff_salt: [u8; 32] = hex::decode(&session_data.coeff_salt)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid coeff_salt hex: {}", e)))?
         .try_into()
         .map_err(|_| actix_web::error::ErrorBadRequest("coeff_salt must be 32 bytes"))?;
 
-    let blinding_factors: Vec<BlindingFactors> = session_data.blinding_factors
+    // Reconstruct signing sessions from stored data
+    let sessions: Vec<SigningSession> = cfg.signers
         .iter()
-        .map(|(alpha_hex, beta_hex, gamma_hex)| {
-            let alpha = Scalar::from_hex(alpha_hex)
-                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid alpha hex: {}", e)))?;
-            let beta = Scalar::from_hex(beta_hex)
-                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid beta hex: {}", e)))?;
-            let gamma = Scalar::from_hex(gamma_hex)
-                .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid gamma hex: {}", e)))?;
-            Ok(BlindingFactors { alpha, beta, gamma })
+        .enumerate()
+        .map(|(i, signer)| {
+            let init_resp = InitResp {
+                session_id: session_data.session_ids[i].clone(),
+                pubkey: session_data.pubkeys[i].clone(),
+                pubnonces: session_data.pubnonces[i].clone(),
+            };
+            SigningSession {
+                signer: signer.clone(),
+                session_id: session_data.session_ids[i].clone(),
+                init_resp,
+            }
         })
-        .collect::<Result<Vec<_>, actix_web::Error>>()?;
-
-    let pubkeys: Vec<PublicKey> = session_data.pubkeys
-        .iter()
-        .map(|pk_str| parse_pubkey(pk_str))
         .collect();
 
-    let public_nonces: Vec<PubNonce> = session_data.pubnonces
-        .iter()
-        .map(|pn_str| PubNonce::from_hex(pn_str)
-            .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid pubnonce hex: {}", e))))
-        .collect::<Result<Vec<_>, actix_web::Error>>()?;
+    let num_signers = sessions.len();
 
-    // Recreate key aggregation context with the same parameters
-    let mut key_agg_ctx = KeyAggContext::new(pubkeys.clone(), Some(&coeff_salt))
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to create key agg context: {}", e)))?;
-    let key_agg_ctx = key_agg_ctx.with_unspendable_taproot_tweak()
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to apply taproot tweak: {}", e)))?;
+    // Generate NEW blinding factors for this signing operation
+    let (blinding_factors, _) = gen_blinding_factors(num_signers);
+
+    // Aggregate pubkeys and nonces using stored coeff_salt and nonce index 1
+    // (nonce index 0 was used for vault recovery tx)
+    let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(&coeff_salt), 1);
 
     // Create the same aggregated key as the original vault
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
@@ -351,16 +352,36 @@ async fn sign_unvault(
     let recovery_psbt = create_recovery_transaction(&req, &unvault_psbt, &recovery_addr, args.static_fee)?;
     let final_spend_psbt = create_final_spend_transaction(&req, &unvault_psbt, &destination_addr, args.static_fee)?;
 
-    // TODO: Get signatures from signers for all three transactions
-    // This would use request_unvault_signatures() to get blind signatures
-
     println!("Created unvault transactions:");
     println!("Unvault PSBT: {:?}", unvault_psbt.unsigned_tx);
     println!("Recovery PSBT: {:?}", recovery_psbt.unsigned_tx);
     println!("Final spend PSBT: {:?}", final_spend_psbt.unsigned_tx);
 
-    let resp = VaultUnvaultResp {
+    // Get the tweaked aggregated pubkey for signing
+    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+
+    // Sign the unvault PSBT
+    println!("Signing unvault transaction...");
+    let signed_unvault_psbt = sign_psbt(
         unvault_psbt,
+        sessions.clone(),
+        &key_agg_ctx,
+        tweaked_aggregated_pubkey,
+        &blinding_factors,
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
+        "UNVAULT",
+    )
+    .await?;
+    println!("✓ Unvault transaction signed");
+
+    // TODO: Sign recovery and final spend transactions
+    // For now, return unsigned recovery and final spend
+    println!("Warning: Recovery and final spend transactions not yet signed");
+
+    let resp = VaultUnvaultResp {
+        unvault_psbt: signed_unvault_psbt,
         recovery_psbt,
         final_spend_psbt,
         unvault_pubkey: xpub.to_string(),

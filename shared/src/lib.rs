@@ -42,10 +42,11 @@ pub struct VaultDepositResp {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VaultSessionData {
+    pub session_ids: Vec<String>,
     pub coeff_salt: String,
     pub blinding_factors: Vec<(String, String, String)>,
     pub pubkeys: Vec<String>,
-    pub pubnonces: Vec<String>,
+    pub pubnonces: Vec<Vec<String>>,  // Outer vec: per signer, Inner vec: per nonce
 }
 
 
