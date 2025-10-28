@@ -409,7 +409,10 @@ cmd_fund() {
     # Parse output
     local vault_addr=$(echo "$output" | grep "Vault address:" | awk '{print $3}')
     local deposit_tx=$(echo "$output" | grep "Raw deposit Transaction:" | awk '{print $4}')
-    local recovery_tx=$(echo "$output" | grep "Raw recovery transaction:" | awk '{print $4}')
+
+    # Parse both recovery transactions from the new format
+    local vault_recovery_tx=$(echo "$output" | grep "Raw vault recovery Transaction:" | awk '{print $5}')
+    local unvault_recovery_tx=$(echo "$output" | grep "Raw unvault recovery Transaction:" | awk '{print $5}')
 
     # Extract session data from output (between the markers)
     local session_data=$(echo "$output" | sed -n '/=== VAULT SESSION DATA/,/=== END SESSION DATA ===/p' | sed '1d;$d' | tr -d '\n')
@@ -426,11 +429,17 @@ cmd_fund() {
         exit 1
     fi
 
-    # Debug: check if recovery_tx was parsed
-    if [ -z "$recovery_tx" ]; then
-        log_warn "Recovery transaction not found in output"
-        log_warn "Looking for line containing 'Raw recovery Transaction:'"
-        echo "$output" | grep -i "recovery"
+    # Check if both recovery transactions were parsed
+    if [ -z "$vault_recovery_tx" ]; then
+        log_error "Vault recovery transaction not found in output"
+        echo "$output"
+        exit 1
+    fi
+
+    if [ -z "$unvault_recovery_tx" ]; then
+        log_error "Unvault recovery transaction not found in output"
+        echo "$output"
+        exit 1
     fi
 
     log_success "Vault created successfully!"
@@ -459,7 +468,8 @@ cmd_fund() {
         --arg amount "$output_amt" \
         --arg vault_addr "$vault_addr" \
         --arg recovery_addr "$recovery_addr" \
-        --arg vault_recovery_tx "$recovery_tx" \
+        --arg vault_recovery_tx "$vault_recovery_tx" \
+        --arg unvault_recovery_tx "$unvault_recovery_tx" \
         --arg deposit_tx "$deposit_tx" \
         --arg session_data "$session_data" \
         '{
@@ -469,6 +479,7 @@ cmd_fund() {
             vault_address: $vault_addr,
             recovery_address: $recovery_addr,
             vault_recovery_tx: $vault_recovery_tx,
+            unvault_recovery_tx: $unvault_recovery_tx,
             deposit_tx: $deposit_tx,
             session_data: $session_data,
             created_at: now
@@ -476,6 +487,7 @@ cmd_fund() {
 
     add_vault "$vault_state"
     log_success "Vault state saved to $STATE_FILE"
+    log_info "Both recovery transactions saved (vault and unvault recovery)"
 }
 
 cmd_unvault() {
@@ -562,7 +574,6 @@ cmd_unvault() {
 
     # Parse output
     local unvault_tx=$(echo "$output" | grep "Raw unvault transaction:" | awk '{print $4}')
-    local recovery_tx_unvault=$(echo "$output" | grep "Raw recovery transaction:" | awk '{print $4}')
     local final_tx=$(echo "$output" | grep "Raw final spend transaction:" | awk '{print $5}')
 
     if [ -z "$unvault_tx" ]; then
@@ -571,7 +582,14 @@ cmd_unvault() {
         exit 1
     fi
 
+    if [ -z "$final_tx" ]; then
+        log_error "Failed to parse final spend transaction"
+        echo "$output"
+        exit 1
+    fi
+
     log_success "Unvault transactions created successfully!"
+    log_info "Note: Unvault recovery tx was pre-signed during vault creation"
 
     # Ask to broadcast unvault
     read -p "Broadcast unvault transaction? (y/N): " broadcast
@@ -588,11 +606,10 @@ cmd_unvault() {
     local current_height=$(get_block_height)
     local unlock_height=$((current_height + timelock))
 
-    # Update vault state - preserving vault recovery tx
+    # Update vault state - preserve recovery txs from vault creation
     local unvault_data=$(jq -n \
         --arg unvault_txid "$unvault_txid" \
         --arg unvault_tx "$unvault_tx" \
-        --arg unvault_recovery_tx "$recovery_tx_unvault" \
         --arg final_tx "$final_tx" \
         --arg dest_addr "$dest_addr" \
         --arg timelock "$timelock" \
@@ -600,7 +617,6 @@ cmd_unvault() {
         '{
             unvault_txid: $unvault_txid,
             unvault_tx: $unvault_tx,
-            unvault_recovery_tx: $unvault_recovery_tx,
             final_spend_tx: $final_tx,
             destination_address: $dest_addr,
             timelock_blocks: ($timelock | tonumber),
@@ -610,6 +626,7 @@ cmd_unvault() {
     update_vault_status "$vault_id" "unvaulted" "$unvault_data"
     log_success "Vault state updated to 'unvaulted'"
     log_info "Final spend can be broadcast after block height: $unlock_height"
+    log_info "Unvault recovery tx (pre-signed during vault creation) can be used if needed"
 }
 
 cmd_recover() {
