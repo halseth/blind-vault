@@ -219,7 +219,10 @@ async fn sign_vault(
     let unvault_scriptpubkey = sp.clone();
 
     // Create unvault recovery tx using predicted txid and helper
-    let unvault_outpoint = OutPoint::new(predicted_unvault_txid, 0);
+    let unvault_outpoint = OutPoint {
+        txid: predicted_unvault_txid,
+        vout: 0,
+    };
 
     let unvault_recovery_tx = create_unvault_recovery_transaction(
         unvault_outpoint,
@@ -358,8 +361,10 @@ async fn sign_unvault(
 
     // ========== Create deterministic unvault transaction ==========
 
-    let vault_amount = Amount::from_sat(req.amount);
-    let unvault_amount = (vault_amount - args.static_fee).unwrap();
+    let vault_amount = Amount::from_sat(req.amount)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid vault amount: {}", e)))?;
+    let unvault_amount = vault_amount.checked_sub(args.static_fee)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Fee exceeds vault amount"))?;
 
     // Use helper function to create the unvault transaction
     let unvault_tx = create_unvault_transaction(
@@ -402,7 +407,10 @@ async fn sign_unvault(
 
     // ========== Create final spend transaction ==========
 
-    let unvault_outpoint = OutPoint::new(unvault_txid, 0);
+    let unvault_outpoint = OutPoint {
+        txid: unvault_txid,
+        vout: 0,
+    };
 
     let final_tx = create_final_spend_transaction(
         unvault_outpoint,
@@ -441,9 +449,18 @@ async fn sign_unvault(
     println!("✓ Final spend transaction signed");
 
     // User already has unvault recovery tx from vault creation
+    // Create an empty PSBT to signal they should use the pre-signed one
+    let empty_tx = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![],
+        output: vec![],
+    };
+    let empty_psbt = Psbt::from_unsigned_tx(empty_tx).expect("Failed to create empty PSBT");
+
     let resp = VaultUnvaultResp {
         unvault_psbt: signed_unvault_psbt,
-        recovery_psbt: Psbt::default(), // Empty - user already has it!
+        recovery_psbt: empty_psbt, // Empty - user already has it!
         final_spend_psbt: signed_final_spend_psbt,
         unvault_pubkey: xpub.to_string(),
     };
