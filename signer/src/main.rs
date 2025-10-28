@@ -80,8 +80,8 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
     let secret_key = SecretKey::from_str( &data.args.priv_key ).unwrap();
     let pubkey = secret_key.public_key(&secp);
 
-    // Generate multiple nonces (2 for now) for this session
-    let num_nonces = 2;
+    // Generate multiple nonces (4 for vault + unvault flow) for this session
+    let num_nonces = 4;
     let mut secret_nonces = Vec::new();
     let mut pubnonces = Vec::new();
 

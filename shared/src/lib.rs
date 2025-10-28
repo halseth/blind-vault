@@ -36,7 +36,8 @@ pub struct VaultDepositReq {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VaultDepositResp {
     pub deposit_psbt: Psbt,
-    pub recovery_psbt: Psbt,
+    pub vault_recovery_psbt: Psbt,
+    pub unvault_recovery_psbt: Psbt,
     pub vault_address: String,
     pub session_data: VaultSessionData,
 }
@@ -46,8 +47,9 @@ pub struct VaultSessionData {
     pub session_ids: Vec<String>,
     pub coeff_salt: String,
     pub pubkeys: Vec<String>,
-    pub pubnonces: Vec<Vec<String>>,  // Outer vec: per signer, Inner vec: per nonce
+    pub pubnonces: Vec<Vec<String>>,  // Outer vec: per signer, Inner vec: per nonce (now 4)
     pub timelock_blocks: u32,
+    pub recovery_addr: String,
 }
 
 
