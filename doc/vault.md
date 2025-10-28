@@ -56,22 +56,31 @@ implementation by passing PSBTs around.
    signers.
 
 3. Using the public keys of the signers, the client creates the aggregate
-   public key that funds will be sent to. 
+   public key that funds will be sent to.
 
-4. The client builds the recovery transaction that will spend from the
-   aggragate public key. 
+4. The client builds the vault recovery transaction that will spend from the
+   aggregate public key back to the recovery address.
 
-5. With the transaction created, the client sends a blinded variant of it to
-   the signers.
+5. The client generates a second aggregate public key for the unvault output
+   and deterministically constructs the unvault transaction to predict its txid.
 
-6. Each signer will respond with a partial signature for their key.
+6. Using the predicted unvault txid, the client builds the unvault recovery
+   transaction that will spend from the unvault output back to the recovery
+   address.
 
-7. The client verifies that the recovery transaction is valid for spending the
-   vault output.
+7. The client sends blinded variants of both recovery transactions to the
+   signers along with ZK proofs.
 
-8. The depositor receives the final PSBT with the vault output key filled and
-   the pre-signed recovery transaction from the client. It can now sign the
-   deposit and move the funds to the vault.
+8. Each signer will respond with partial signatures for both recovery
+   transactions using different nonces for each.
+
+9. The client verifies that both recovery transactions are valid and fully
+   signed.
+
+10. The depositor receives the final PSBT with the vault output key filled and
+    both pre-signed recovery transactions from the client. It can now sign the
+    deposit and move the funds to the vault, knowing it has recovery options
+    for both the vault and unvault states.
 
 
 ### Details
@@ -85,20 +94,64 @@ signers.
 Using this key as the output, the client creates an unsigned transaction that
 has this as its only output.
 
-2) The signers are then asked to sign a spend tx from this output, spending the
-full amount back to a recovery address. Together with this signing request, the
-client attaches a ZK proof that proves that the recovery tx does exactly this
-(spend whole amount into a hardcoded recovery address). This recovery address
-is static for the whole vault lifetime, but not revealed to the signers.
+2) The signers are then asked to sign TWO recovery transactions from the vault:
 
-Now that the client has this pre-signed spend transaction, it is safe to sign
-the deposit tx and send the coins into the control of the signer quorum.
+   a) **Vault recovery tx**: Spends from the vault output back to the recovery
+      address. Together with this signing request, the client attaches a ZK
+      proof that proves the transaction spends the whole amount to the hardcoded
+      recovery address.
 
-To unvault the funds, the owner will get a tweak the output aggregate key of 
-the signers, and create an unvault tx that spends the funds to this public key.
+   b) **Unvault recovery tx**: To create this, the client first generates a
+      second aggregate public key (using fresh nonces from the signers) and
+      deterministically constructs the unvault transaction. By predicting the
+      unvault txid, the client can build a recovery transaction that spends from
+      the unvault output back to the recovery address. A ZK proof is attached
+      proving this transaction is correctly formed.
 
-Two spends from the unvault tx is created: one recovery tx and another spend tx
-that is timelocked and spends the funds to the final destination. 
+   The recovery address is static for the whole vault lifetime, but not revealed
+   to the signers. Each signer uses a different nonce for each recovery
+   transaction.
 
-3) These txs and proof is sent to the signers who will validate that they are
-indeed correctly crafted, then sign them.
+   Now that the client has BOTH pre-signed recovery transactions, it is safe to
+   sign the deposit tx and send the coins into the control of the signer quorum.
+   This protects against a compromised client during the unvault phase, as the
+   depositor already holds a pre-signed recovery transaction for the unvault
+   state.
+
+3) To unvault the funds, the owner contacts the client which uses the same
+   session data (public keys, nonces, coefficient salt) from vault creation to
+   reconstruct the same unvault aggregate key. The client creates:
+
+   a) **Unvault tx**: Spends from the vault to the pre-determined unvault output
+
+   b) **Final spend tx**: Timelocked transaction that spends from the unvault
+      output to the final destination
+
+   Note that the unvault recovery tx is NOT created at this point - it was
+   already pre-signed during vault creation (step 2b).
+
+4) These txs and proofs are sent to the signers who validate they are correctly
+   crafted, then sign them using the remaining nonces from the original session.
+
+### Nonce Management
+
+To enable pre-signing both recovery transactions during vault creation while
+still allowing the unvault and final spend transactions to be signed later, each
+signer generates **4 nonces** per vault session:
+
+- **Nonce 0**: Used for signing the vault recovery transaction (during vault creation)
+- **Nonce 1**: Used for signing the unvault recovery transaction (during vault creation)
+- **Nonce 2**: Used for signing the unvault transaction (during unvault phase)
+- **Nonce 3**: Used for signing the final spend transaction (during unvault phase)
+
+All nonces are generated during the initial vault creation and stored in the
+session data. The client reuses the same session (including public keys, nonces,
+and coefficient salt) during the unvault phase to ensure the unvault aggregate
+key matches the predicted value used when pre-signing the unvault recovery
+transaction.
+
+This nonce allocation ensures that:
+1. Both recovery transactions can be pre-signed before the deposit is made
+2. The depositor holds complete recovery options before funds enter the vault
+3. The same session can be safely reused for the unvault operations without
+   nonce reuse vulnerabilities
