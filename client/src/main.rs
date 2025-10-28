@@ -448,19 +448,9 @@ async fn sign_unvault(
     .await?;
     println!("✓ Final spend transaction signed");
 
-    // User already has unvault recovery tx from vault creation
-    // Create an empty PSBT to signal they should use the pre-signed one
-    let empty_tx = Transaction {
-        version: transaction::Version::TWO,
-        lock_time: absolute::LockTime::ZERO,
-        input: vec![],
-        output: vec![],
-    };
-    let empty_psbt = Psbt::from_unsigned_tx(empty_tx).expect("Failed to create empty PSBT");
-
+    // User already has unvault recovery tx from vault creation (pre-signed)
     let resp = VaultUnvaultResp {
         unvault_psbt: signed_unvault_psbt,
-        recovery_psbt: empty_psbt, // Empty - user already has it!
         final_spend_psbt: signed_final_spend_psbt,
         unvault_pubkey: xpub.to_string(),
     };

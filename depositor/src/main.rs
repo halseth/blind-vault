@@ -428,22 +428,19 @@ async fn unvault(
 
             // Display transaction details
             let unvault_tx = resp.unvault_psbt.extract_tx().expect("valid unvault tx");
-            let recovery_tx = resp.recovery_psbt.extract_tx().expect("valid recovery tx");
             let final_spend_tx = resp.final_spend_psbt.extract_tx().expect("valid final spend tx");
 
             println!("Unvault transaction: {:#?}", unvault_tx);
-            println!("Recovery transaction: {:#?}", recovery_tx);
             println!("Final spend transaction: {:#?}", final_spend_tx);
 
             let serialized_unvault = consensus::encode::serialize_hex(&unvault_tx);
-            let serialized_recovery = consensus::encode::serialize_hex(&recovery_tx);
             let serialized_final = consensus::encode::serialize_hex(&final_spend_tx);
 
             println!("Raw unvault transaction: {}", serialized_unvault);
-            println!("Raw recovery transaction: {}", serialized_recovery);
             println!("Raw final spend transaction: {}", serialized_final);
 
-            println!("Unvault transactions created successfully!");
+            println!("\nUnvault transactions created successfully!");
+            println!("Note: Recovery transaction was pre-signed during vault creation.");
             println!("You can now broadcast the unvault transaction, wait for the timelock, then broadcast the final spend.");
         }
         Err(e) => {
