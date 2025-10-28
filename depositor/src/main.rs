@@ -290,11 +290,11 @@ async fn create_vault(
 
     println!("1. VAULT RECOVERY TRANSACTION (spends from vault):");
     println!("   Transaction details: {:#?}", vault_recovery_tx);
-    println!("   Raw transaction: {}", serialized_vault_recovery_tx);
+    println!("Raw vault recovery Transaction: {}", serialized_vault_recovery_tx);
 
     println!("\n2. UNVAULT RECOVERY TRANSACTION (spends from unvault):");
     println!("   Transaction details: {:#?}", unvault_recovery_tx);
-    println!("   Raw transaction: {}", serialized_unvault_recovery_tx);
+    println!("Raw unvault recovery Transaction: {}", serialized_unvault_recovery_tx);
     println!("=== END RECOVERY TRANSACTIONS ===\n");
 
     let mut key_map: HashMap<bitcoin::XOnlyPublicKey, PrivateKey> = HashMap::new();
