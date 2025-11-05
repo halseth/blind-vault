@@ -39,19 +39,22 @@ struct Args {
 
     #[arg(long)]
     listen: SocketAddr,
-
-    /// Network to use.
-    #[arg(long, default_value_t = Network::Signet)]
-    network: Network,
-
-    // subtract static fee. TODO: use anchor instead?
-    #[arg(long)]
-    static_fee: Amount,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 struct Config {
     pub signers: Vec<String>,
+    pub network: Network,
+    #[serde(deserialize_with = "deserialize_amount")]
+    pub static_fee: Amount,
+}
+
+fn deserialize_amount<'de, D>(deserializer: D) -> Result<Amount, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Amount::from_str(&s).map_err(serde::de::Error::custom)
 }
 
 // This struct represents state
@@ -72,7 +75,8 @@ struct Params {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    let cfg: Config = serde_json::from_str(&args.cfg.unwrap()).unwrap();
+    let cfg_content = std::fs::read_to_string(args.cfg.unwrap())?;
+    let cfg: Config = serde_json::from_str(&cfg_content).unwrap();
     println!("config: {:?}", cfg);
 
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -105,7 +109,7 @@ async fn sign_vault(
     let secp = Secp256k1::new();
 
     let cfg = data.cfg.clone();
-    let args = Args::parse();
+    let static_fee = cfg.static_fee;
 
     let sessions = init_signer_sessions(&cfg).await?;
     let num_signers = sessions.len();
@@ -124,7 +128,7 @@ async fn sign_vault(
     let (xonly, _) = pk.x_only_public_key();
     println!("agg pubkey: {} x-only:{}", pk, xonly);
 
-    let tap = Address::p2tr(&secp, xonly, None, args.network);
+    let tap = Address::p2tr(&secp, xonly, None, cfg.network);
     let sp = tap.script_pubkey();
 
     let mut deposit_psbt = req.deposit_psbt.clone();
@@ -152,7 +156,7 @@ async fn sign_vault(
 
     let recovery_script_pubkey = Address::from_str(&req.recovery_addr)
         .unwrap()
-        .require_network(args.network)
+        .require_network(cfg.network)
         .unwrap()
         .script_pubkey();
 
@@ -166,7 +170,7 @@ async fn sign_vault(
         op,
         utxos[0].value,
         recovery_script_pubkey.clone(),
-        args.static_fee,
+        static_fee,
     );
 
     let mut recovery_psbt =
@@ -210,14 +214,14 @@ async fn sign_vault(
         op,              // vault outpoint
         utxos[0].value,  // vault amount
         sp.clone(),      // vault scriptpubkey (same key for unvault)
-        args.static_fee,
+        static_fee,
     );
 
     // Predict unvault txid
     let predicted_unvault_txid = unvault_tx_template.compute_txid();
     println!("Predicted unvault txid: {}", predicted_unvault_txid);
 
-    let unvault_amount = (utxos[0].value - args.static_fee).unwrap();
+    let unvault_amount = (utxos[0].value - static_fee).unwrap();
     let unvault_scriptpubkey = sp.clone();
 
     // Create unvault recovery tx using predicted txid and helper
@@ -230,7 +234,7 @@ async fn sign_vault(
         unvault_outpoint,
         unvault_amount,
         recovery_script_pubkey.clone(),
-        args.static_fee,
+        static_fee,
     );
 
     let mut unvault_recovery_psbt = Psbt::from_unsigned_tx(unvault_recovery_tx)
@@ -307,7 +311,7 @@ async fn sign_unvault(
 
     let secp = Secp256k1::new();
     let cfg = data.cfg.clone();
-    let args = Args::parse();
+    let static_fee = cfg.static_fee;
 
     // Parse vault outpoint
     let vault_outpoint = OutPoint::from_str(&req.vault_outpoint)
@@ -316,7 +320,7 @@ async fn sign_unvault(
     // Parse destination address
     let destination_addr = Address::from_str(&req.destination_addr)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid destination address: {}", e)))?
-        .require_network(args.network)
+        .require_network(cfg.network)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Address network mismatch: {}", e)))?;
 
     let session_data = &req.session_data;
@@ -357,7 +361,7 @@ async fn sign_unvault(
     let (xpub, _) = pk.x_only_public_key();
 
     // This is the same key used for both vault AND unvault
-    let vault_scriptpubkey = Address::p2tr(&secp, xpub, None, args.network).script_pubkey();
+    let vault_scriptpubkey = Address::p2tr(&secp, xpub, None, cfg.network).script_pubkey();
 
     println!("Using aggregated pubkey: {}", xpub);
 
@@ -365,7 +369,7 @@ async fn sign_unvault(
 
     let vault_amount = Amount::from_sat(req.amount)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid vault amount: {}", e)))?;
-    let unvault_amount = vault_amount.checked_sub(args.static_fee)
+    let unvault_amount = vault_amount.checked_sub(static_fee)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Fee exceeds vault amount"))?;
 
     // Use helper function to create the unvault transaction
@@ -373,7 +377,7 @@ async fn sign_unvault(
         vault_outpoint,
         vault_amount,
         vault_scriptpubkey.clone(),
-        args.static_fee,
+        static_fee,
     );
 
     let unvault_txid = unvault_tx.compute_txid();
@@ -419,7 +423,7 @@ async fn sign_unvault(
         unvault_amount,
         destination_addr.script_pubkey(),
         session_data.timelock_blocks,
-        args.static_fee,
+        static_fee,
     );
 
     let mut final_psbt = Psbt::from_unsigned_tx(final_tx)
