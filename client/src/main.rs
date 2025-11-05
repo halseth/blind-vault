@@ -27,6 +27,8 @@ use shared::{
 use std::collections::BTreeMap;
 use std::fs;
 use std::net::SocketAddr;
+use std::process::{Command, Stdio};
+use std::io::Write;
 use std::str::FromStr;
 
 #[derive(Debug, Parser)]
@@ -625,23 +627,41 @@ async fn request_partial_sigs(
 
         println!("params: {}", serde_json::to_string(&zk_params).unwrap());
 
-        // TODO: Replace with actual ZK proof generation when available
-        // let output = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
-        //     //.env("RISC0_DEV_MODE", "true")
-        //     .arg(format!("--prove={}", serde_json::to_string(&zk_params).unwrap()))
-        //     .output()?;
-        //
-        // let proof = String::from_utf8(output.stdout).unwrap();
-        // let proof = proof.strip_suffix("\n").unwrap();
-        let proof = "dummy_zk_proof";
-        //println!("output: {}", proof);
-        fs::write("receipt.txt", proof).expect("Should be able to write to `/foo/tmp`");
+        // Generate ZK proof using zk-musig CLI
+        let zk_params_json = serde_json::to_string(&zk_params)?;
 
-        //let proof =
-        //    fs::read_to_string("receipt.txt").expect("Should be able to read from `/foo/tmp`");
+        let mut cmd = Command::new("zk-musig");
+        cmd.arg("prove")
+            .arg("--config")
+            .arg("-")
+            .arg("--proof-type")
+            .arg("fast")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        // TODO: must prove that all these values are generated correctly
-        // TODO: blind b, parity?, key_coeff?
+        // Pass through RISC0_DEV_MODE if set
+        if let Ok(dev_mode) = std::env::var("RISC0_DEV_MODE") {
+            cmd.env("RISC0_DEV_MODE", dev_mode);
+        }
+
+        let mut child = cmd.spawn()?;
+
+        // Write config to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(zk_params_json.as_bytes())?;
+        }
+
+        let output = child.wait_with_output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("zk-musig prove failed: {}", stderr);
+            return Err(format!("ZK proof generation failed: {}", stderr).into());
+        }
+
+        let proof = String::from_utf8(output.stdout)?;
+
         let body = SignReq {
             session_id: id.clone(),
             challenge_parity: challenge_parity.unwrap_u8(),
@@ -649,9 +669,8 @@ async fn request_partial_sigs(
             b: bp.encode_hex(),
             e: hex::encode(ep),
             tx_type: tx_type.to_string(),
-            zk_proof: proof.to_string(),
+            zk_proof: proof,
         };
-        // TODO: attach ZK proof that these values are createed accoring to the protocol
 
         let body_json = serde_json::to_string(&body).unwrap();
         // println!("body_json: {}", body_json);

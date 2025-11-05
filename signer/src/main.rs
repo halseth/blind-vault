@@ -6,11 +6,14 @@ use hex::ToHex;
 use musig2::SecNonce;
 use musig2::secp::MaybeScalar;
 use secp256k1::{Secp256k1, SecretKey, PublicKey, rand};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::{InitResp, SignReq, SignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::io::Write;
 use std::net::SocketAddr;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::Mutex;
 
@@ -24,6 +27,23 @@ struct AppState {
 struct SessionData {
     secret_key: SecretKey,
     secret_nonces: Vec<SecNonce>,  // Vector of nonces, used and deleted in order
+}
+
+// Structs for parsing zk-musig verification output
+#[derive(Deserialize, Debug)]
+struct ZkProofOutput {
+    pub verified: bool,
+    pub journal: JournalData,
+}
+
+#[derive(Deserialize, Debug)]
+struct JournalData {
+    pub pubkey: String,
+    pub pubnonce: String,
+    pub challenge_parity: u8,
+    pub nonce_parity: u8,
+    pub b: String,
+    pub e: String,
 }
 
 #[derive(Debug, Parser)]
@@ -188,42 +208,112 @@ async fn session_sign(
         },
     }
 
-    // TODO: need two proofs:
-    // 1) verify that the musig is created correctly (zk-musig)
-    // 2a) check that the recovery transaction one is signing is correct
-    //  zk-tx:
-    //  - spends all funds into hardcoded recovery address (1-in-1-out)
-    // 2b) check that the unvault transaction one is signing is correct
-    //  zk-tx:
-    //  - spends all funds into aggeregate pubkey that is derived from the same pubkeys that the deposit went to. (can use exact same pubkey for now? or just tweak it).
-    //  - check that it has a timelocked script path spending to the recovery addr
-    // 2c) check that the spend from the unvault is correct
-    //  zk-tx:
-    //  - spends all funds into a pre-determined address
+    // Verify ZK proof using zk-musig CLI
+    println!("Verifying ZK proof ({} bytes)", req.zk_proof.len());
 
+    let mut child = Command::new("zk-musig")
+        .arg("verify")
+        .arg("--input")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            eprintln!("Failed to spawn zk-musig: {}", e);
+            ErrorInternalServerError("Failed to spawn zk-musig verifier")
+        })?;
 
-    println!("zk_proof: {}",  req.zk_proof.len());
-    // TODO: Replace with actual ZK proof verification when available
-    // let mut child = Command::new("/Users/johan.halseth/code/rust/zk-musig/target/release/host")
-    //     //.env("RISC0_DEV_MODE", "true")
-    //     .arg(format!("--verify=true"))
-    //     .stdin(Stdio::piped())
-    //     .spawn()
-    //     .unwrap();
-    //
-    // child.stdin.as_mut().unwrap().write_all(req.zk_proof.as_bytes())?;
-    //
-    // let output = child.wait_with_output()?;
-    //
-    // if !output.status.success() {
-    //     println!("zk_proof failed: {}", String::from_utf8_lossy(&output.stderr));
-    //     return Err(ErrorInternalServerError("zk_proof failed"));
-    // }
-    //
-    // let proof = String::from_utf8(output.stdout).unwrap();
-    let proof = "dummy_verification_result".to_string();
-    //let proof = proof.strip_suffix("\n").unwrap();
-    println!("output: {}", proof);
+    // Write proof to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(req.zk_proof.as_bytes()).map_err(|e| {
+            eprintln!("Failed to write proof to zk-musig: {}", e);
+            ErrorInternalServerError("Failed to write proof to verifier")
+        })?;
+    }
+
+    let output = child.wait_with_output().map_err(|e| {
+        eprintln!("Failed to wait for zk-musig: {}", e);
+        ErrorInternalServerError("Failed to wait for verifier")
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("ZK proof verification failed: {}", stderr);
+        return Err(ErrorInternalServerError("ZK proof verification failed"));
+    }
+
+    let verification_output_str = String::from_utf8(output.stdout).map_err(|e| {
+        eprintln!("Failed to parse verification output: {}", e);
+        ErrorInternalServerError("Failed to parse verification output")
+    })?;
+
+    // Parse the JSON output from zk-musig verify
+    let proof_output: ZkProofOutput = serde_json::from_str(&verification_output_str).map_err(|e| {
+        eprintln!("Failed to deserialize proof output: {}", e);
+        eprintln!("Output was: {}", verification_output_str);
+        ErrorInternalServerError("Failed to parse proof verification JSON")
+    })?;
+
+    if !proof_output.verified {
+        eprintln!("ZK proof verification returned verified=false");
+        return Err(ErrorInternalServerError("ZK proof not verified"));
+    }
+
+    // Verify that the journal data matches the SignReq parameters and session data
+    println!("Verifying journal matches SignReq parameters and session data...");
+
+    // Verify pubkey matches this signer's public key
+    let secp = Secp256k1::new();
+    let expected_pubkey = seckey.public_key(&secp);
+    let expected_pubkey_hex = hex::encode(expected_pubkey.serialize());
+
+    if proof_output.journal.pubkey != expected_pubkey_hex {
+        eprintln!("Pubkey mismatch: journal={}, expected={}",
+            proof_output.journal.pubkey, expected_pubkey_hex);
+        return Err(ErrorInternalServerError("Pubkey in proof doesn't match signer's public key"));
+    }
+
+    // Verify pubnonce matches this session's nonce
+    let expected_pubnonce = secnonce.public_nonce();
+    let expected_pubnonce_hex = hex::encode(expected_pubnonce.serialize());
+
+    if proof_output.journal.pubnonce != expected_pubnonce_hex {
+        eprintln!("Pubnonce mismatch: journal={}, expected={}",
+            proof_output.journal.pubnonce, expected_pubnonce_hex);
+        return Err(ErrorInternalServerError("Pubnonce in proof doesn't match session nonce"));
+    }
+
+    // Verify challenge_parity matches
+    if proof_output.journal.challenge_parity != req.challenge_parity {
+        eprintln!("Challenge parity mismatch: journal={}, req={}",
+            proof_output.journal.challenge_parity, req.challenge_parity);
+        return Err(ErrorInternalServerError("Challenge parity mismatch between proof and request"));
+    }
+
+    // Verify nonce_parity matches
+    if proof_output.journal.nonce_parity != req.nonce_parity {
+        eprintln!("Nonce parity mismatch: journal={}, req={}",
+            proof_output.journal.nonce_parity, req.nonce_parity);
+        return Err(ErrorInternalServerError("Nonce parity mismatch between proof and request"));
+    }
+
+    // Verify parameter 'b' matches
+    if proof_output.journal.b != req.b {
+        eprintln!("Parameter 'b' mismatch: journal={}, req={}",
+            proof_output.journal.b, req.b);
+        return Err(ErrorInternalServerError("Parameter 'b' mismatch between proof and request"));
+    }
+
+    // Verify parameter 'e' matches
+    if proof_output.journal.e != req.e {
+        eprintln!("Parameter 'e' mismatch: journal={}, req={}",
+            proof_output.journal.e, req.e);
+        return Err(ErrorInternalServerError("Parameter 'e' mismatch between proof and request"));
+    }
+
+    println!("ZK proof verified successfully");
+    println!("Journal verification passed - all parameters match (pubkey, pubnonce, b, e, parities)");
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         b,
