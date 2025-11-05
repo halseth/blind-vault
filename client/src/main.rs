@@ -630,8 +630,17 @@ async fn request_partial_sigs(
         // Generate ZK proof using zk-musig CLI
         let zk_params_json = serde_json::to_string(&zk_params)?;
 
-        let mut cmd = Command::new("zk-musig");
-        cmd.arg("prove")
+        // WORKAROUND: Use cargo run instead of installed binary
+        // The installed zk-musig binary crashes with IllegalInstruction in zkVM
+        // but cargo run works correctly. This appears to be a RISC Zero issue.
+        let mut cmd = Command::new("cargo");
+        cmd.arg("run")
+            .arg("--quiet")
+            .arg("--release")
+            .arg("--manifest-path")
+            .arg("/Users/johan.halseth/code/rust/zk-musig/host/Cargo.toml")
+            .arg("--")
+            .arg("prove")
             .arg("--config")
             .arg("-")
             .arg("--proof-type")
