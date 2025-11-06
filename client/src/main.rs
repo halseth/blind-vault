@@ -111,8 +111,14 @@ async fn sign_vault(
     let cfg = data.cfg.clone();
     let static_fee = cfg.static_fee;
 
-    let sessions = init_signer_sessions(&cfg).await?;
+    // Convert timelock_blocks to nSequence for commitment
+    // For relative block-height timelock: nSequence encodes the number of blocks
+    let nsequence = Sequence::from_height(req.timelock_blocks as u16).to_consensus_u32();
+
+    let (sessions, timelock_salts) = init_signer_sessions(&cfg, nsequence).await?;
     let num_signers = sessions.len();
+
+    println!("Per-signer timelock commitment salts stored for later proof generation");
 
     let coeff_salt = gen_coeff_salt();
 
@@ -289,6 +295,7 @@ async fn sign_vault(
             .map(|s| s.init_resp.pubnonces.clone())
             .collect(),
         timelock_blocks: req.timelock_blocks,
+        timelock_salts: timelock_salts.iter().map(|salt| hex::encode(salt)).collect(),
         recovery_addr: req.recovery_addr.clone(),
     };
 
@@ -473,12 +480,39 @@ struct SigningSession {
 
 async fn init_signer_sessions(
     cfg: &Config,
-) -> Result<Vec<SigningSession>, Box<dyn std::error::Error>> {
+    nsequence: u32,
+) -> Result<(Vec<SigningSession>, Vec<[u8; 32]>), Box<dyn std::error::Error>> {
     let mut sessions = vec![];
+    let mut salts = vec![];
 
-    for s in &cfg.signers {
+    println!("Generating per-signer timelock commitments:");
+    println!("  nSequence: 0x{:08x}", nsequence);
+
+    for (i, s) in cfg.signers.iter().enumerate() {
         let id = hex::encode(rand::rng().random::<[u8; 32]>());
-        let resp = reqwest::get(format!("http://{s}/init/{id}"))
+
+        // Generate a unique salt for this signer
+        let salt: [u8; 32] = rand::rng().random();
+
+        // Compute timelock commitment: SHA256(salt || nSequence)
+        // This allows committing to both block-height and time-based relative timelocks
+        let mut hasher = Sha256::new();
+        hasher.update(salt);
+        hasher.update(nsequence.to_le_bytes());
+        let timelock_commitment: [u8; 32] = hasher.finalize().into();
+
+        println!("  Signer {}: salt={}, commitment={}",
+            i, hex::encode(salt), hex::encode(timelock_commitment));
+
+        let init_req = shared::InitReq {
+            timelock_commitment: hex::encode(timelock_commitment),
+        };
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{s}/init/{id}"))
+            .json(&init_req)
+            .send()
             .await?
             .json::<InitResp>()
             .await?;
@@ -491,9 +525,10 @@ async fn init_signer_sessions(
         };
 
         sessions.push(session);
+        salts.push(salt);
     }
 
-    Ok(sessions)
+    Ok((sessions, salts))
 }
 
 fn aggregate_partial_sigs(

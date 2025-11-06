@@ -8,7 +8,7 @@ use musig2::secp::MaybeScalar;
 use secp256k1::{Secp256k1, SecretKey, PublicKey, rand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shared::{InitResp, SignReq, SignResp};
+use shared::{InitReq, InitResp, SignReq, SignResp};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Write;
@@ -27,6 +27,7 @@ struct AppState {
 struct SessionData {
     secret_key: SecretKey,
     secret_nonces: Vec<SecNonce>,  // Vector of nonces, used and deleted in order
+    timelock_commitment: Vec<u8>, // SHA256(salt || nSequence), will be verified during signing of the finalization tx
 }
 
 // Structs for parsing zk-musig verification output
@@ -79,8 +80,12 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-#[get("/init/{id}")]
-async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Result<impl Responder> {
+#[post("/init/{id}")]
+async fn session_init(
+    data: web::Data<AppState>,
+    id: web::Path<String>,
+    req: web::Json<InitReq>,
+) -> Result<impl Responder> {
     let session_id = id.to_string();
 
     // Make sure session id is valid hex encoding of 32 bytes.
@@ -93,8 +98,19 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
         Err(e) => return Err(UrlencodedError::Encoding.into()),
     }
 
+    // Decode and validate timelock commitment
+    let timelock_commitment = match hex::decode(&req.timelock_commitment) {
+        Ok(bytes) => {
+            if bytes.len() != 32 {
+                return Err(UrlencodedError::Encoding.into());
+            }
+            bytes
+        }
+        Err(e) => return Err(UrlencodedError::Encoding.into()),
+    };
 
     println!("session_id: {}", session_id);
+    println!("timelock_commitment: {}", req.timelock_commitment);
 
     let secp = Secp256k1::new();
     let secret_key = SecretKey::from_str( &data.args.priv_key ).unwrap();
@@ -126,6 +142,7 @@ async fn session_init(data: web::Data<AppState>, id: web::Path<String>) -> Resul
     let session_data = SessionData {
         secret_key: secret_key.clone(),
         secret_nonces: secret_nonces,
+        timelock_commitment: timelock_commitment,
     };
 
     data.sessions

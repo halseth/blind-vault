@@ -2,6 +2,11 @@ use bitcoin::Psbt;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InitReq {
+    pub timelock_commitment: String, // Hex-encoded SHA256(salt || nSequence), supports block-height and time-based timelocks
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InitResp {
     pub session_id: String,
     pub pubkey: String,
@@ -49,6 +54,7 @@ pub struct VaultSessionData {
     pub pubkeys: Vec<String>,
     pub pubnonces: Vec<Vec<String>>,  // Outer vec: per signer, Inner vec: per nonce (now 4)
     pub timelock_blocks: u32,
+    pub timelock_salts: Vec<String>,  // Per-signer salts for timelock commitment proofs (hex-encoded)
     pub recovery_addr: String,
 }
 
