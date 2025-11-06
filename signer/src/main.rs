@@ -211,16 +211,7 @@ async fn session_sign(
     // Verify ZK proof using zk-musig CLI
     println!("Verifying ZK proof ({} bytes)", req.zk_proof.len());
 
-    // WORKAROUND: Use cargo run instead of installed binary
-    // The installed zk-musig binary crashes with IllegalInstruction in zkVM
-    // but cargo run works correctly. This appears to be a RISC Zero issue.
-    let mut child = Command::new("cargo")
-        .arg("run")
-        .arg("--quiet")
-        .arg("--release")
-        .arg("--manifest-path")
-        .arg("/Users/johan.halseth/code/rust/zk-musig/host/Cargo.toml")
-        .arg("--")
+    let mut child = Command::new("zk-musig")
         .arg("verify")
         .arg("--input")
         .arg("-")
