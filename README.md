@@ -34,9 +34,19 @@ $ cargo run -- --listen="127.0.0.1:8080" --priv-key="c28a9f80738efe7b628cc2b68d7
 
 #### 2. Start the client
 
+First create a config file `client-config.json`:
+```json
+{
+  "signers": ["127.0.0.1:8080"],
+  "network": "signet",
+  "static_fee": "0.00000500 BTC"
+}
+```
+
+Then start the client:
 ```bash
 $ cd client/
-$ cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --static-fee "0.00000500 BTC"
+$ cargo run -- --listen 127.0.0.1:8090 --cfg client-config.json
 ```
 
 #### 3. Create a vault deposit
@@ -49,6 +59,7 @@ $ cargo run -- create \
   --prevout "e5a1bdd3f3318e6d27f5f61ec95831998f73a98640a69c87304230a58ea02e32:0" \
   --prev-amt "0.00190943 BTC" \
   --output-amt "0.0019 BTC" \
+  --timelock-blocks 144 \
   --client-url "127.0.0.1:8090" \
   --priv-key "8c99b79db6e36fa099b0368408bf630fbe8bc271c639b32d5bcce609fdc07f3f" \
   --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3"
@@ -57,6 +68,7 @@ $ cargo run -- create \
 # - Raw deposit transaction (broadcast this to create the vault)
 # - Raw recovery transaction (pre-signed, can be used if needed)
 # - Vault address (the aggregated multisig address)
+# - Session data (JSON, save this for unvaulting later)
 ```
 
 #### 4. Unvault funds from a vault
@@ -69,10 +81,12 @@ $ cargo run -- unvault \
   --vault-outpoint "<deposit_txid>:0" \
   --vault-amount "0.0019 BTC" \
   --destination-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" \
-  --timelock-blocks 144 \
   --recovery-addr "tb1ptsxxhp5j8umn2pm47dldpfa3zkke2eshtfc6car7x8tfhtgnmqpsrx0ae3" \
+  --session-data '<session_data_json_from_create>' \
   --client-url "127.0.0.1:8090"
 ```
+
+Note: The `session_data` is the JSON output from the create command and contains the aggregated public key and other session information needed to reconstruct the vault.
 
 ## How It Works
 
