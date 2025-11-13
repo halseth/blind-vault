@@ -609,43 +609,18 @@ fn verify_partial_sigs(
     }
 }
 
-async fn request_partial_sigs(
-    sessions: Vec<SigningSession>,
-    key_agg_ctx: &KeyAggContext,
-    aggregated_pubkey: Point,
+// Generate ZK musig proofs for all signers
+async fn generate_musig_proofs(
+    sessions: &Vec<SigningSession>,
     blinding_factors: &Vec<BlindingFactors>,
-    sign_nonce: MaybePoint,
-    b: MaybeScalar,
-    e: MaybeScalar,
-    message: String,
+    message: &str,
     pubkeys: &Vec<PublicKey>,
     public_nonces: &Vec<PubNonce>,
     coeff_salt: &[u8; 32],
-    tx_type: &str,
-) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
-    let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
-    let nonce_parity = sign_nonce.parity();
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut proofs = vec![];
 
-    let mut partial_signatures = vec![];
-    for (i, session) in sessions.iter().enumerate() {
-        let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
-        let key_coeff = key_agg_ctx.key_coefficient(their_pubkey).unwrap();
-
-        let even_parity = bool::from(!challenge_parity);
-        let ep = if sign_nonce.has_even_y() ^ even_parity {
-            key_coeff * e - blinding_factors[i].beta
-        } else {
-            key_coeff * e + blinding_factors[i].beta
-        };
-
-        let bp = b + blinding_factors[i].gamma;
-
-        let signer = session.signer.clone();
-        let id = session.session_id.clone();
-        let client = reqwest::Client::new();
-        let url = format!("http://{signer}/sign/{id}");
-        println!("url: {}", url);
-
+    for (i, _session) in sessions.iter().enumerate() {
         let zk_params = Params {
             coeff_salt: hex::encode(coeff_salt),
             blinding_factors: blinding_factors
@@ -660,7 +635,7 @@ async fn request_partial_sigs(
                 .collect(),
             pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
             pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
-            message: message.clone(),
+            message: message.to_string(),
             signer_index: i,
         };
 
@@ -700,6 +675,50 @@ async fn request_partial_sigs(
         }
 
         let proof = String::from_utf8(output.stdout)?;
+        proofs.push(proof);
+    }
+
+    Ok(proofs)
+}
+
+async fn request_partial_sigs(
+    sessions: Vec<SigningSession>,
+    key_agg_ctx: &KeyAggContext,
+    aggregated_pubkey: Point,
+    blinding_factors: &Vec<BlindingFactors>,
+    sign_nonce: MaybePoint,
+    b: MaybeScalar,
+    e: MaybeScalar,
+    pubkeys: &Vec<PublicKey>,
+    coeff_salt: &[u8; 32],
+    tx_type: &str,
+    musig_proofs: Vec<String>,
+) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
+    let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
+    let nonce_parity = sign_nonce.parity();
+
+    let mut partial_signatures = vec![];
+    for (i, session) in sessions.iter().enumerate() {
+        let their_pubkey: PublicKey = key_agg_ctx.get_pubkey(i).unwrap();
+        let key_coeff = key_agg_ctx.key_coefficient(their_pubkey).unwrap();
+
+        let even_parity = bool::from(!challenge_parity);
+        let ep = if sign_nonce.has_even_y() ^ even_parity {
+            key_coeff * e - blinding_factors[i].beta
+        } else {
+            key_coeff * e + blinding_factors[i].beta
+        };
+
+        let bp = b + blinding_factors[i].gamma;
+
+        let signer = session.signer.clone();
+        let id = session.session_id.clone();
+        let client = reqwest::Client::new();
+        let url = format!("http://{signer}/sign/{id}");
+        println!("url: {}", url);
+
+        // Use pre-generated proof for this signer
+        let proof = &musig_proofs[i];
 
         let body = SignReq {
             session_id: id.clone(),
@@ -708,7 +727,7 @@ async fn request_partial_sigs(
             b: bp.encode_hex(),
             e: hex::encode(ep),
             tx_type: tx_type.to_string(),
-            zk_proof: proof,
+            zk_proof: proof.clone(),
         };
 
         let body_json = serde_json::to_string(&body).unwrap();
@@ -984,6 +1003,17 @@ async fn sign_psbt(
     let e: MaybeScalar =
         compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
 
+    // Generate ZK musig proofs for all signers
+    let musig_proofs = generate_musig_proofs(
+        &sessions,
+        &blinding_factors,
+        &hex::encode(message),
+        &pubkeys,
+        &public_nonces,
+        &coeff_salt,
+    )
+    .await?;
+
     // Request partial signatures from signers
     let partial_signatures = request_partial_sigs(
         sessions,
@@ -993,11 +1023,10 @@ async fn sign_psbt(
         sign_nonce,
         b,
         e,
-        hex::encode(message),
         &pubkeys,
-        &public_nonces,
         &coeff_salt,
         tx_type,
+        musig_proofs,
     )
     .await?;
 
