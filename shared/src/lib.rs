@@ -22,6 +22,8 @@ pub struct SignReq {
     pub e: String,
     pub tx_type: String,
     pub zk_proof: String,
+    pub nsequence_proof: Option<String>,  // JSON-encoded ZK proof from zk-tx for nSequence verification
+    pub message_salt: Option<String>,     // Hex-encoded 32-byte salt for message commitment verification
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -55,6 +57,7 @@ pub struct VaultSessionData {
     pub pubnonces: Vec<Vec<String>>,  // Outer vec: per signer, Inner vec: per nonce (now 4)
     pub timelock_blocks: u32,
     pub timelock_salts: Vec<String>,  // Per-signer salts for timelock commitment proofs (hex-encoded)
+    pub message_salts: Vec<String>,    // Per-signer salts for message commitment proofs (hex-encoded)
     pub recovery_addr: String,
 }
 

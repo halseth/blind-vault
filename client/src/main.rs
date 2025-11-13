@@ -69,6 +69,7 @@ struct Params {
     pub pubkeys: Vec<String>,
     pub pubnonces: Vec<String>,
     pub message: String,
+    pub message_salt: String,
     pub signer_index: usize,
 }
 
@@ -115,7 +116,7 @@ async fn sign_vault(
     // For relative block-height timelock: nSequence encodes the number of blocks
     let nsequence = Sequence::from_height(req.timelock_blocks as u16).to_consensus_u32();
 
-    let (sessions, timelock_salts) = init_signer_sessions(&cfg, nsequence).await?;
+    let (sessions, timelock_salts, message_salts) = init_signer_sessions(&cfg, nsequence).await?;
     let num_signers = sessions.len();
 
     println!("Per-signer timelock commitment salts stored for later proof generation");
@@ -196,6 +197,7 @@ async fn sign_vault(
         &public_nonces,
         &coeff_salt,
         "VAULT",
+        None,  // No session_data needed for VAULT
     )
     .await?;
 
@@ -265,6 +267,7 @@ async fn sign_vault(
         &public_nonces_1,
         &coeff_salt,
         "RECOVERY",
+        None,  // No session_data needed for RECOVERY
     )
     .await?;
 
@@ -296,6 +299,7 @@ async fn sign_vault(
             .collect(),
         timelock_blocks: req.timelock_blocks,
         timelock_salts: timelock_salts.iter().map(|salt| hex::encode(salt)).collect(),
+        message_salts: message_salts.iter().map(|salt| hex::encode(salt)).collect(),
         recovery_addr: req.recovery_addr.clone(),
     };
 
@@ -414,6 +418,7 @@ async fn sign_unvault(
         &public_nonces_2,
         &coeff_salt,
         "UNVAULT",
+        None,  // No session_data needed for UNVAULT
     )
     .await?;
     println!("✓ Unvault transaction signed");
@@ -457,6 +462,7 @@ async fn sign_unvault(
         &public_nonces_3,
         &coeff_salt,
         "FINAL",
+        Some(session_data),  // Pass session_data for nSequence proof
     )
     .await?;
     println!("✓ Final spend transaction signed");
@@ -481,9 +487,10 @@ struct SigningSession {
 async fn init_signer_sessions(
     cfg: &Config,
     nsequence: u32,
-) -> Result<(Vec<SigningSession>, Vec<[u8; 32]>), Box<dyn std::error::Error>> {
+) -> Result<(Vec<SigningSession>, Vec<[u8; 32]>, Vec<[u8; 32]>), Box<dyn std::error::Error>> {
     let mut sessions = vec![];
-    let mut salts = vec![];
+    let mut timelock_salts = vec![];
+    let mut message_salts = vec![];
 
     println!("Generating per-signer timelock commitments:");
     println!("  nSequence: 0x{:08x}", nsequence);
@@ -491,18 +498,21 @@ async fn init_signer_sessions(
     for (i, s) in cfg.signers.iter().enumerate() {
         let id = hex::encode(rand::rng().random::<[u8; 32]>());
 
-        // Generate a unique salt for this signer
-        let salt: [u8; 32] = rand::rng().random();
+        // Generate a unique timelock salt for this signer
+        let timelock_salt: [u8; 32] = rand::rng().random();
+
+        // Generate a unique message salt for this signer (for message commitment)
+        let message_salt: [u8; 32] = rand::rng().random();
 
         // Compute timelock commitment: SHA256(salt || nSequence)
         // This allows committing to both block-height and time-based relative timelocks
         let mut hasher = Sha256::new();
-        hasher.update(salt);
+        hasher.update(timelock_salt);
         hasher.update(nsequence.to_le_bytes());
         let timelock_commitment: [u8; 32] = hasher.finalize().into();
 
-        println!("  Signer {}: salt={}, commitment={}",
-            i, hex::encode(salt), hex::encode(timelock_commitment));
+        println!("  Signer {}: timelock_salt={}, commitment={}",
+            i, hex::encode(timelock_salt), hex::encode(timelock_commitment));
 
         let init_req = shared::InitReq {
             timelock_commitment: hex::encode(timelock_commitment),
@@ -525,10 +535,11 @@ async fn init_signer_sessions(
         };
 
         sessions.push(session);
-        salts.push(salt);
+        timelock_salts.push(timelock_salt);
+        message_salts.push(message_salt);
     }
 
-    Ok((sessions, salts))
+    Ok((sessions, timelock_salts, message_salts))
 }
 
 fn aggregate_partial_sigs(
@@ -609,18 +620,29 @@ fn verify_partial_sigs(
     }
 }
 
-// Generate ZK musig proofs for all signers
-async fn generate_musig_proofs(
+// Generate ZK proofs (zk-musig and optionally zk-tx) for each signer
+async fn generate_signer_proofs(
     sessions: &Vec<SigningSession>,
     blinding_factors: &Vec<BlindingFactors>,
     message: &str,
     pubkeys: &Vec<PublicKey>,
     public_nonces: &Vec<PubNonce>,
     coeff_salt: &[u8; 32],
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut proofs = vec![];
+    tx_type: &str,
+    psbt: &Psbt,
+    session_data: Option<&VaultSessionData>,
+) -> Result<Vec<SignerProofs>, Box<dyn std::error::Error>> {
+    let mut all_proofs = vec![];
 
     for (i, _session) in sessions.iter().enumerate() {
+        // Get message_salt for this signer from session_data
+        let message_salt = match session_data {
+            Some(sd) => sd.message_salts.get(i)
+                .ok_or(format!("Missing message_salt for signer {} in session_data", i))?
+                .clone(),
+            None => return Err("session_data required for ZK proof generation".into()),
+        };
+
         let zk_params = Params {
             coeff_salt: hex::encode(coeff_salt),
             blinding_factors: blinding_factors
@@ -636,6 +658,7 @@ async fn generate_musig_proofs(
             pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
             pubnonces: public_nonces.iter().map(|pk| pk.to_string()).collect(),
             message: message.to_string(),
+            message_salt,
             signer_index: i,
         };
 
@@ -674,11 +697,128 @@ async fn generate_musig_proofs(
             return Err(format!("ZK proof generation failed: {}", stderr).into());
         }
 
-        let proof = String::from_utf8(output.stdout)?;
-        proofs.push(proof);
+        let musig_proof = String::from_utf8(output.stdout)?;
+
+        // Parse zk-musig proof
+        let musig_proof_json: serde_json::Value = serde_json::from_str(&musig_proof)?;
+
+        // Generate zk-tx nSequence proof if this is a FINAL transaction
+        // For FINAL transactions, we also need to verify message_commitment matching
+        let (nsequence_proof, message_salt_hex) = if tx_type == "FINAL" {
+            // Extract message_commitment from zk-musig proof for FINAL transactions
+            let musig_message_commitment = musig_proof_json["journal"]["message_commitment"]
+                .as_str()
+                .ok_or("Missing message_commitment in zk-musig proof for FINAL transaction")?
+                .to_string();
+
+            let session_data = session_data
+                .ok_or("session_data required for FINAL transaction type")?;
+
+            // Get the nsequence from session_data
+            let nsequence = session_data.timelock_blocks;
+
+            // Get the timelock_salt and message_salt for this signer
+            let timelock_salt = session_data.timelock_salts.get(i)
+                .ok_or(format!("Missing timelock_salt for signer {}", i))?;
+            let message_salt = session_data.message_salts.get(i)
+                .ok_or(format!("Missing message_salt for signer {}", i))?;
+
+            // Extract transaction and prevout information from PSBT
+            let tx = &psbt.unsigned_tx;
+            let tx_hex = bitcoin::consensus::encode::serialize_hex(tx);
+
+            // Get prevout information from PSBT inputs
+            let prevout_amounts: Vec<u64> = psbt.inputs.iter()
+                .map(|input| {
+                    input.witness_utxo
+                        .as_ref()
+                        .map(|txout| txout.value.to_sat())
+                        .ok_or("Missing witness_utxo")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let prevout_scripts: Vec<String> = psbt.inputs.iter()
+                .map(|input| {
+                    input.witness_utxo
+                        .as_ref()
+                        .map(|txout| hex::encode(txout.script_pubkey.as_bytes()))
+                        .ok_or("Missing witness_utxo scriptPubKey")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Create zk-tx config
+            let nseq_config = serde_json::json!({
+                "tx_hex": tx_hex,
+                "nsequence_salt": timelock_salt,
+                "nsequence": nsequence,
+                "message_salt": message_salt,
+                "prevout_amounts": prevout_amounts,
+                "prevout_scripts": prevout_scripts,
+            });
+
+            // Call zk-tx to generate proof
+            let mut zk_tx_cmd = Command::new("zk-tx");
+            zk_tx_cmd.arg("prove")
+                .arg("nsequence")
+                .arg("--config")
+                .arg("-")
+                .arg("--output")
+                .arg("-")
+                .arg("--proof-kind")
+                .arg("fast")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            // Pass through RISC0_DEV_MODE if set
+            if let Ok(dev_mode) = std::env::var("RISC0_DEV_MODE") {
+                zk_tx_cmd.env("RISC0_DEV_MODE", dev_mode);
+            }
+
+            let mut zk_tx_child = zk_tx_cmd.spawn()?;
+
+            // Write config to stdin
+            if let Some(mut stdin) = zk_tx_child.stdin.take() {
+                stdin.write_all(serde_json::to_string(&nseq_config)?.as_bytes())?;
+            }
+
+            let zk_tx_output = zk_tx_child.wait_with_output()?;
+
+            if !zk_tx_output.status.success() {
+                let stderr = String::from_utf8_lossy(&zk_tx_output.stderr);
+                eprintln!("zk-tx prove failed: {}", stderr);
+                return Err(format!("zk-tx proof generation failed: {}", stderr).into());
+            }
+
+            let nseq_proof_str = String::from_utf8(zk_tx_output.stdout)?;
+            let nseq_proof: serde_json::Value = serde_json::from_str(&nseq_proof_str)?;
+
+            // Extract message_commitment from zk-tx proof
+            let nseq_message_commitment = nseq_proof["journal"]["message_commitment"]
+                .as_str()
+                .ok_or("Missing message_commitment in zk-tx proof")?;
+
+            // Verify that message commitments match
+            if musig_message_commitment != nseq_message_commitment {
+                return Err(format!(
+                    "Message commitment mismatch! zk-musig: {}, zk-tx: {}",
+                    musig_message_commitment, nseq_message_commitment
+                ).into());
+            }
+
+            (Some(nseq_proof_str), Some(message_salt.clone()))
+        } else {
+            (None, None)
+        };
+
+        all_proofs.push(SignerProofs {
+            musig_proof,
+            nsequence_proof,
+            message_salt: message_salt_hex,
+        });
     }
 
-    Ok(proofs)
+    Ok(all_proofs)
 }
 
 async fn request_partial_sigs(
@@ -692,7 +832,7 @@ async fn request_partial_sigs(
     pubkeys: &Vec<PublicKey>,
     coeff_salt: &[u8; 32],
     tx_type: &str,
-    musig_proofs: Vec<String>,
+    signer_proofs: Vec<SignerProofs>,
 ) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
     let challenge_parity = aggregated_pubkey.parity() ^ key_agg_ctx.parity_acc();
     let nonce_parity = sign_nonce.parity();
@@ -717,8 +857,8 @@ async fn request_partial_sigs(
         let url = format!("http://{signer}/sign/{id}");
         println!("url: {}", url);
 
-        // Use pre-generated proof for this signer
-        let proof = &musig_proofs[i];
+        // Use pre-generated proofs for this signer
+        let proofs = &signer_proofs[i];
 
         let body = SignReq {
             session_id: id.clone(),
@@ -727,7 +867,9 @@ async fn request_partial_sigs(
             b: bp.encode_hex(),
             e: hex::encode(ep),
             tx_type: tx_type.to_string(),
-            zk_proof: proof.clone(),
+            zk_proof: proofs.musig_proof.clone(),
+            nsequence_proof: proofs.nsequence_proof.clone(),
+            message_salt: proofs.message_salt.clone(),
         };
 
         let body_json = serde_json::to_string(&body).unwrap();
@@ -757,6 +899,13 @@ struct BlindingFactors {
     alpha: Scalar,
     beta: Scalar,
     gamma: Scalar,
+}
+
+#[derive(Debug, Clone)]
+struct SignerProofs {
+    musig_proof: String,
+    nsequence_proof: Option<String>,
+    message_salt: Option<String>,
 }
 
 fn gen_blinding_factors(num_signers: usize) -> Vec<BlindingFactors> {
@@ -955,6 +1104,7 @@ async fn sign_psbt(
     public_nonces: &Vec<PubNonce>,
     coeff_salt: &[u8; 32],
     tx_type: &str,
+    session_data: Option<&VaultSessionData>,
 ) -> Result<Psbt, Box<dyn std::error::Error>> {
     // Extract the sighash message from the PSBT
     let tx = psbt.unsigned_tx.clone();
@@ -1003,14 +1153,17 @@ async fn sign_psbt(
     let e: MaybeScalar =
         compute_challenge_hash_tweak(&nonce_x_bytes, &tweaked_aggregated_pubkey.into(), &message);
 
-    // Generate ZK musig proofs for all signers
-    let musig_proofs = generate_musig_proofs(
+    // Generate ZK proofs for all signers
+    let signer_proofs = generate_signer_proofs(
         &sessions,
         &blinding_factors,
         &hex::encode(message),
         &pubkeys,
         &public_nonces,
         &coeff_salt,
+        tx_type,
+        &psbt,
+        session_data,
     )
     .await?;
 
@@ -1026,7 +1179,7 @@ async fn sign_psbt(
         &pubkeys,
         &coeff_salt,
         tx_type,
-        musig_proofs,
+        signer_proofs,
     )
     .await?;
 

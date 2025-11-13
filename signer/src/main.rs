@@ -45,6 +45,7 @@ struct JournalData {
     pub nonce_parity: u8,
     pub b: String,
     pub e: String,
+    pub message_commitment: Option<String>,  // Present for proofs with message commitment binding
 }
 
 #[derive(Debug, Parser)]
@@ -331,6 +332,127 @@ async fn session_sign(
 
     println!("ZK proof verified successfully");
     println!("Journal verification passed - all parameters match (pubkey, pubnonce, b, e, parities)");
+
+    // For FINAL transactions, verify nSequence proof and message commitment binding
+    if req.tx_type == "FINAL" {
+        println!("Verifying nSequence proof for FINAL transaction...");
+
+        // Extract message_commitment from musig proof
+        let musig_message_commitment = proof_output.journal.message_commitment.as_ref()
+            .ok_or_else(|| {
+                eprintln!("Missing message_commitment in zk-musig proof journal");
+                ErrorInternalServerError("Missing message_commitment in proof")
+            })?;
+
+        // Verify nSequence proof is provided
+        let nsequence_proof = req.nsequence_proof.as_ref()
+            .ok_or_else(|| {
+                eprintln!("Missing nsequence_proof for FINAL transaction");
+                ErrorInternalServerError("Missing nsequence_proof for FINAL transaction")
+            })?;
+
+        let message_salt = req.message_salt.as_ref()
+            .ok_or_else(|| {
+                eprintln!("Missing message_salt for FINAL transaction");
+                ErrorInternalServerError("Missing message_salt for FINAL transaction")
+            })?;
+
+        println!("Verifying nSequence ZK proof...");
+
+        // Verify zk-tx proof using zk-tx CLI
+        let mut zk_tx_child = Command::new("zk-tx")
+            .arg("verify")
+            .arg("nsequence")
+            .arg("--proof")
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                eprintln!("Failed to spawn zk-tx: {}", e);
+                ErrorInternalServerError("Failed to spawn zk-tx verifier")
+            })?;
+
+        // Write proof to stdin
+        if let Some(mut stdin) = zk_tx_child.stdin.take() {
+            stdin.write_all(nsequence_proof.as_bytes()).map_err(|e| {
+                eprintln!("Failed to write nsequence proof to zk-tx: {}", e);
+                ErrorInternalServerError("Failed to write proof to verifier")
+            })?;
+        }
+
+        let zk_tx_output = zk_tx_child.wait_with_output().map_err(|e| {
+            eprintln!("Failed to wait for zk-tx: {}", e);
+            ErrorInternalServerError("Failed to wait for verifier")
+        })?;
+
+        if !zk_tx_output.status.success() {
+            let stderr = String::from_utf8_lossy(&zk_tx_output.stderr);
+            eprintln!("nSequence ZK proof verification failed: {}", stderr);
+            return Err(ErrorInternalServerError("nSequence ZK proof verification failed"));
+        }
+
+        let nseq_verification_str = String::from_utf8(zk_tx_output.stdout).map_err(|e| {
+            eprintln!("Failed to parse nsequence verification output: {}", e);
+            ErrorInternalServerError("Failed to parse verification output")
+        })?;
+
+        // Parse zk-tx verification output
+        let nseq_verify: serde_json::Value = serde_json::from_str(&nseq_verification_str).map_err(|e| {
+            eprintln!("Failed to deserialize nsequence verify output: {}", e);
+            eprintln!("Output was: {}", nseq_verification_str);
+            ErrorInternalServerError("Failed to parse nsequence verification JSON")
+        })?;
+
+        if !nseq_verify["verified"].as_bool().unwrap_or(false) {
+            eprintln!("nSequence ZK proof verification returned verified=false");
+            return Err(ErrorInternalServerError("nSequence ZK proof not verified"));
+        }
+
+        // Extract message_commitment from nsequence proof
+        let nseq_message_commitment = nseq_verify["journal"]["message_commitment"]
+            .as_str()
+            .ok_or_else(|| {
+                eprintln!("Missing message_commitment in nsequence proof journal");
+                ErrorInternalServerError("Missing message_commitment in nsequence proof")
+            })?;
+
+        // Verify message commitments match
+        if musig_message_commitment != nseq_message_commitment {
+            eprintln!("Message commitment mismatch!");
+            eprintln!("  zk-musig: {}", musig_message_commitment);
+            eprintln!("  zk-tx:    {}", nseq_message_commitment);
+            return Err(ErrorInternalServerError("Message commitment mismatch between proofs"));
+        }
+
+        // Get timelock_commitment from session to verify it matches what was committed during init
+        let timelock_commitment_from_proof = nseq_verify["journal"]["timelock_commitment"]
+            .as_str()
+            .ok_or_else(|| {
+                eprintln!("Missing timelock_commitment in nsequence proof");
+                ErrorInternalServerError("Missing timelock_commitment in nsequence proof")
+            })?;
+
+        // Verify timelock commitment matches session data
+        {
+            let sessions = data.sessions.lock().unwrap();
+            let session = sessions.get(&session_id)
+                .ok_or_else(|| ErrorInternalServerError("Session not found"))?;
+
+            let session_timelock_hex = hex::encode(&session.timelock_commitment);
+            if session_timelock_hex != timelock_commitment_from_proof {
+                eprintln!("Timelock commitment mismatch!");
+                eprintln!("  Session:  {}", session_timelock_hex);
+                eprintln!("  Proof:    {}", timelock_commitment_from_proof);
+                return Err(ErrorInternalServerError("Timelock commitment doesn't match session"));
+            }
+        }
+
+        println!("✓ nSequence proof verified successfully");
+        println!("✓ Message commitments match: {}", musig_message_commitment);
+        println!("✓ Timelock commitment matches session: {}", timelock_commitment_from_proof);
+    }
 
     let sig: MaybeScalar = match musig2::sign_partial_challenge(
         b,
