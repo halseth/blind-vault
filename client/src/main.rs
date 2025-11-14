@@ -718,9 +718,12 @@ async fn generate_signer_proofs(
 
         let mut child = cmd.spawn()?;
 
-        // Write config to stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(zk_params_json.as_bytes())?;
+        // Write config to stdin and close it
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(zk_params_json.as_bytes())?;
+                // stdin is dropped here when the block ends, closing the pipe
+            }
         }
 
         let output = child.wait_with_output()?;
@@ -808,9 +811,12 @@ async fn generate_signer_proofs(
 
             let mut zk_tx_child = zk_tx_cmd.spawn()?;
 
-            // Write config to stdin
-            if let Some(mut stdin) = zk_tx_child.stdin.take() {
-                stdin.write_all(serde_json::to_string(&nseq_config)?.as_bytes())?;
+            // Write config to stdin and close it
+            {
+                if let Some(mut stdin) = zk_tx_child.stdin.take() {
+                    stdin.write_all(serde_json::to_string(&nseq_config)?.as_bytes())?;
+                    // stdin is dropped here when the block ends, closing the pipe
+                }
             }
 
             let zk_tx_output = zk_tx_child.wait_with_output()?;
