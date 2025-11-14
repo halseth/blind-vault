@@ -105,6 +105,24 @@ async fn sign_vault(
     data: web::Data<AppState>,
     req: web::Json<VaultDepositReq>,
 ) -> actix_web::Result<impl Responder> {
+    eprintln!("[POST /vault] Received vault deposit request");
+
+    match sign_vault_impl(data, req).await {
+        Ok(resp) => {
+            eprintln!("[POST /vault] Success - returning VaultDepositResp");
+            Ok(web::Json(resp))
+        }
+        Err(e) => {
+            eprintln!("[POST /vault] Error: {}", e);
+            Err(actix_web::error::ErrorInternalServerError(format!("Vault deposit failed: {}", e)))
+        }
+    }
+}
+
+async fn sign_vault_impl(
+    data: web::Data<AppState>,
+    req: web::Json<VaultDepositReq>,
+) -> Result<VaultDepositResp, Box<dyn std::error::Error>> {
     println!("Vault deposit request: {:?}", req);
 
     let secp = Secp256k1::new();
@@ -310,7 +328,7 @@ async fn sign_vault(
         vault_address: tap.to_string(),
         session_data,
     };
-    Ok(web::Json(resp))
+    Ok(resp)
 }
 
 #[post("/vault/unvault")]
@@ -318,6 +336,24 @@ async fn sign_unvault(
     data: web::Data<AppState>,
     req: web::Json<VaultUnvaultReq>,
 ) -> actix_web::Result<impl Responder> {
+    eprintln!("[POST /vault/unvault] Received unvault request");
+
+    match sign_unvault_impl(data, req).await {
+        Ok(resp) => {
+            eprintln!("[POST /vault/unvault] Success - returning VaultUnvaultResp");
+            Ok(web::Json(resp))
+        }
+        Err(e) => {
+            eprintln!("[POST /vault/unvault] Error: {}", e);
+            Err(actix_web::error::ErrorInternalServerError(format!("Unvault failed: {}", e)))
+        }
+    }
+}
+
+async fn sign_unvault_impl(
+    data: web::Data<AppState>,
+    req: web::Json<VaultUnvaultReq>,
+) -> Result<VaultUnvaultResp, Box<dyn std::error::Error>> {
     println!("Unvault request: {:?}", req);
 
     let secp = Secp256k1::new();
@@ -326,13 +362,13 @@ async fn sign_unvault(
 
     // Parse vault outpoint
     let vault_outpoint = OutPoint::from_str(&req.vault_outpoint)
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid vault outpoint: {}", e)))?;
+        .map_err(|e| format!("Invalid vault outpoint: {}", e))?;
 
     // Parse destination address
     let destination_addr = Address::from_str(&req.destination_addr)
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid destination address: {}", e)))?
+        .map_err(|e| format!("Invalid destination address: {}", e))?
         .require_network(cfg.network)
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Address network mismatch: {}", e)))?;
+        .map_err(|e| format!("Address network mismatch: {}", e))?;
 
     let session_data = &req.session_data;
     println!("Reusing vault session to sign unvault and final transactions:");
@@ -341,9 +377,9 @@ async fn sign_unvault(
 
     // Parse stored coeff_salt
     let coeff_salt: [u8; 32] = hex::decode(&session_data.coeff_salt)
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid coeff_salt hex: {}", e)))?
+        .map_err(|e| format!("Invalid coeff_salt hex: {}", e))?
         .try_into()
-        .map_err(|_| actix_web::error::ErrorBadRequest("coeff_salt must be 32 bytes"))?;
+        .map_err(|_| "coeff_salt must be 32 bytes")?;
 
     // Reconstruct signing sessions from stored data
     let sessions: Vec<SigningSession> = cfg.signers
@@ -379,9 +415,9 @@ async fn sign_unvault(
     // ========== Create deterministic unvault transaction ==========
 
     let vault_amount = Amount::from_sat(req.amount)
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("Invalid vault amount: {}", e)))?;
+        .map_err(|e| format!("Invalid vault amount: {}", e))?;
     let unvault_amount = vault_amount.checked_sub(static_fee)
-        .ok_or_else(|| actix_web::error::ErrorBadRequest("Fee exceeds vault amount"))?;
+        .ok_or_else(|| "Fee exceeds vault amount")?;
 
     // Use helper function to create the unvault transaction
     let unvault_tx = create_unvault_transaction(
@@ -395,7 +431,7 @@ async fn sign_unvault(
     println!("Unvault txid: {}", unvault_txid);
 
     let mut unvault_psbt = Psbt::from_unsigned_tx(unvault_tx)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("PSBT creation failed: {}", e)))?;
+        .map_err(|e| format!("PSBT creation failed: {}", e))?;
 
     unvault_psbt.inputs = vec![Input {
         witness_utxo: Some(TxOut {
@@ -439,7 +475,7 @@ async fn sign_unvault(
     );
 
     let mut final_psbt = Psbt::from_unsigned_tx(final_tx)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("PSBT creation failed: {}", e)))?;
+        .map_err(|e| format!("PSBT creation failed: {}", e))?;
 
     final_psbt.inputs = vec![Input {
         witness_utxo: Some(TxOut {
@@ -474,7 +510,7 @@ async fn sign_unvault(
         unvault_pubkey: xpub.to_string(),
     };
 
-    Ok(web::Json(resp))
+    Ok(resp)
 }
 
 #[derive(Clone, Debug)]
