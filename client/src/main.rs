@@ -144,6 +144,22 @@ async fn sign_vault_impl(
     let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
         aggregate_pubs(&sessions, Some(&coeff_salt), 0);
 
+    // Prepare session data early for use in signing operations as well as to return to depositor
+    // for later use during unvault
+    let session_data = VaultSessionData {
+        session_ids: sessions.iter().map(|s| s.session_id.clone()).collect(),
+        coeff_salt: hex::encode(coeff_salt),
+        pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
+        pubnonces: sessions
+            .iter()
+            .map(|s| s.init_resp.pubnonces.clone())
+            .collect(),
+        timelock_blocks: req.timelock_blocks,
+        timelock_salts: timelock_salts.iter().map(|salt| hex::encode(salt)).collect(),
+        message_salts: message_salts.iter().map(|salt| hex::encode(salt)).collect(),
+        recovery_addr: req.recovery_addr.clone(),
+    };
+
     let untweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     println!("untweaked agg pubkey X: {}", untweaked_aggregated_pubkey);
     let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
@@ -215,7 +231,7 @@ async fn sign_vault_impl(
         &public_nonces,
         &coeff_salt,
         "VAULT",
-        None,  // No session_data needed for VAULT
+        &session_data,
     )
     .await?;
 
@@ -285,7 +301,7 @@ async fn sign_vault_impl(
         &public_nonces_1,
         &coeff_salt,
         "RECOVERY",
-        None,  // No session_data needed for RECOVERY
+        &session_data,
     )
     .await?;
 
@@ -305,21 +321,6 @@ async fn sign_vault_impl(
     //        .unwrap()
     //        .insert(s.session_id, session_data);
     //});
-
-    // Prepare session data to return to depositor for later use during unvault
-    let session_data = VaultSessionData {
-        session_ids: sessions.iter().map(|s| s.session_id.clone()).collect(),
-        coeff_salt: hex::encode(coeff_salt),
-        pubkeys: pubkeys.iter().map(|pk| pk.to_string()).collect(),
-        pubnonces: sessions
-            .iter()
-            .map(|s| s.init_resp.pubnonces.clone())
-            .collect(),
-        timelock_blocks: req.timelock_blocks,
-        timelock_salts: timelock_salts.iter().map(|salt| hex::encode(salt)).collect(),
-        message_salts: message_salts.iter().map(|salt| hex::encode(salt)).collect(),
-        recovery_addr: req.recovery_addr.clone(),
-    };
 
     let resp = VaultDepositResp {
         deposit_psbt: deposit_psbt,
@@ -454,7 +455,7 @@ async fn sign_unvault_impl(
         &public_nonces_2,
         &coeff_salt,
         "UNVAULT",
-        None,  // No session_data needed for UNVAULT
+        session_data,
     )
     .await?;
     println!("✓ Unvault transaction signed");
@@ -498,7 +499,7 @@ async fn sign_unvault_impl(
         &public_nonces_3,
         &coeff_salt,
         "FINAL",
-        Some(session_data),  // Pass session_data for nSequence proof
+        session_data,
     )
     .await?;
     println!("✓ Final spend transaction signed");
@@ -666,18 +667,15 @@ async fn generate_signer_proofs(
     coeff_salt: &[u8; 32],
     tx_type: &str,
     psbt: &Psbt,
-    session_data: Option<&VaultSessionData>,
+    session_data: &VaultSessionData,
 ) -> Result<Vec<SignerProofs>, Box<dyn std::error::Error>> {
     let mut all_proofs = vec![];
 
     for (i, _session) in sessions.iter().enumerate() {
         // Get message_salt for this signer from session_data
-        let message_salt = match session_data {
-            Some(sd) => sd.message_salts.get(i)
-                .ok_or(format!("Missing message_salt for signer {} in session_data", i))?
-                .clone(),
-            None => return Err("session_data required for ZK proof generation".into()),
-        };
+        let message_salt = session_data.message_salts.get(i)
+            .ok_or(format!("Missing message_salt for signer {} in session_data", i))?
+            .clone();
 
         let zk_params = Params {
             coeff_salt: hex::encode(coeff_salt),
@@ -746,9 +744,6 @@ async fn generate_signer_proofs(
                 .as_str()
                 .ok_or("Missing message_commitment in zk-musig proof for FINAL transaction")?
                 .to_string();
-
-            let session_data = session_data
-                .ok_or("session_data required for FINAL transaction type")?;
 
             // Get the nsequence from session_data
             let nsequence = session_data.timelock_blocks;
@@ -1140,7 +1135,7 @@ async fn sign_psbt(
     public_nonces: &Vec<PubNonce>,
     coeff_salt: &[u8; 32],
     tx_type: &str,
-    session_data: Option<&VaultSessionData>,
+    session_data: &VaultSessionData,
 ) -> Result<Psbt, Box<dyn std::error::Error>> {
     // Extract the sighash message from the PSBT
     let tx = psbt.unsigned_tx.clone();
