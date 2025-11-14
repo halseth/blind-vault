@@ -135,7 +135,6 @@ async fn sign_vault_impl(
     let nsequence = Sequence::from_height(req.timelock_blocks as u16).to_consensus_u32();
 
     let (sessions, timelock_salts, message_salts) = init_signer_sessions(&cfg, nsequence).await?;
-    let num_signers = sessions.len();
 
     println!("Per-signer timelock commitment salts stored for later proof generation");
 
@@ -742,7 +741,7 @@ async fn generate_signer_proofs(
         // Generate zk-tx nSequence proof if this is a FINAL transaction
         // For FINAL transactions, we also need to verify message_commitment matching
         let (nsequence_proof, message_salt_hex) = if tx_type == "FINAL" {
-            // Extract message_commitment from zk-musig proof for FINAL transactions
+            // Extract message_commitment from zk-musig proof
             let musig_message_commitment = musig_proof_json["journal"]["message_commitment"]
                 .as_str()
                 .ok_or("Missing message_commitment in zk-musig proof for FINAL transaction")?
@@ -866,8 +865,6 @@ async fn request_partial_sigs(
     sign_nonce: MaybePoint,
     b: MaybeScalar,
     e: MaybeScalar,
-    pubkeys: &Vec<PublicKey>,
-    coeff_salt: &[u8; 32],
     tx_type: &str,
     signer_proofs: Vec<SignerProofs>,
 ) -> Result<Vec<MaybeScalar>, Box<dyn std::error::Error>> {
@@ -904,13 +901,11 @@ async fn request_partial_sigs(
             b: bp.encode_hex(),
             e: hex::encode(ep),
             tx_type: tx_type.to_string(),
-            zk_proof: proofs.musig_proof.clone(),
+            musig_proof: proofs.musig_proof.clone(),
             nsequence_proof: proofs.nsequence_proof.clone(),
             message_salt: proofs.message_salt.clone(),
         };
 
-        let body_json = serde_json::to_string(&body).unwrap();
-        // println!("body_json: {}", body_json);
         let resp = client.post(url).json(&body).send().await?;
         println!("{resp:#?}");
         let status = resp.status();
@@ -1213,8 +1208,6 @@ async fn sign_psbt(
         sign_nonce,
         b,
         e,
-        &pubkeys,
-        &coeff_salt,
         tx_type,
         signer_proofs,
     )

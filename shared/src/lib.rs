@@ -21,7 +21,7 @@ pub struct SignReq {
     pub b: String,
     pub e: String,
     pub tx_type: String,
-    pub zk_proof: String,
+    pub musig_proof: String,
     pub nsequence_proof: Option<String>,  // JSON-encoded ZK proof from zk-tx for nSequence verification
     pub message_salt: Option<String>,     // Hex-encoded 32-byte salt for message commitment verification
 }

@@ -227,7 +227,7 @@ async fn session_sign(
     }
 
     // Verify ZK proof using zk-musig CLI
-    println!("Verifying ZK proof ({} bytes)", req.zk_proof.len());
+    println!("Verifying ZK proof ({} bytes)", req.musig_proof.len());
 
     let mut child = Command::new("zk-musig")
         .arg("verify")
@@ -244,7 +244,7 @@ async fn session_sign(
 
     // Write proof to stdin
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(req.zk_proof.as_bytes()).map_err(|e| {
+        stdin.write_all(req.musig_proof.as_bytes()).map_err(|e| {
             eprintln!("Failed to write proof to zk-musig: {}", e);
             ErrorInternalServerError("Failed to write proof to verifier")
         })?;
