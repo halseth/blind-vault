@@ -221,6 +221,28 @@ async fn sign_vault_impl(
     }];
 
     // Sign the vault recovery PSBT (uses nonce 0)
+    // TODO: properties to prove about the tx:
+    //  maybe we don't need to prove anything about the recovery txs?
+    // since the depositor will have the fully signed before depositing, he can check that they
+    // are valid before creating the vault.
+    // unvault tx is also deterministic, and we can either have them sign it first, or commit to it.
+    // finalize: this one cannot be known up front, since final destination is not yet known.
+    // instead, when we want to start an unvault, we will contact the signers with the final tx,
+    // and have them verify the timelock on the tx. Maybe that's the only thing they need to check
+    // in order to sign? Idea is that a malicious actor can contact them, but the only thing they
+    // can achieve is to sign some invalid tx or a tx that spends the vault but is timelocked.
+    // The moment the unvault tx is on chain, the client will know if they have a valid
+    // finalization tx. If not they will always recover the funds Idea is that a malicious actor
+    // can contact them, but the only thing they can achieve is to sign some invalid tx or a tx
+    // that spends the vault but is timelocked. The moment the unvault tx is on chain, the client
+    // will know if they have a valid finalization tx. If not they will always recover the funds.
+    //
+    // in short: the three transactions vault recovery, unvault recovery and unvault can be
+    // pre-signed, and checked by the client and depositor before depositing. So the signers can blindly sign them, and just enforce a time lock on the last signing request.
+    // I think we could even remove the vault recovery tx if we have the unvault+unvault recoveyr be presigned. That avoids one more set of ZK proofs.
+    // So we just need a timelock proof.
+
+    // Sign the vault recovery PSBT (uses nonce 0)
     let vault_recovery_psbt = sign_psbt(
         recovery_psbt,
         sessions.clone(),
