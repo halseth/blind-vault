@@ -1110,11 +1110,11 @@ fn create_final_spend_transaction(
 
     Transaction {
         version: transaction::Version::TWO,
-        lock_time: absolute::LockTime::from_height(timelock_blocks).unwrap(),
+        lock_time: absolute::LockTime::ZERO,
         input: vec![TxIn {
             previous_output: unvault_outpoint,
             script_sig: ScriptBuf::default(),
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            sequence: Sequence::from_height(timelock_blocks as u16),
             witness: Witness::default(),
         }],
         output: vec![TxOut {
