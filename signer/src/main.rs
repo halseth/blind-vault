@@ -363,7 +363,7 @@ async fn session_sign(
         let mut zk_tx_child = Command::new("zk-tx")
             .arg("verify")
             .arg("nsequence")
-            .arg("--proof")
+            .arg("--input")
             .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

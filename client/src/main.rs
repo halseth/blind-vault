@@ -795,8 +795,6 @@ async fn generate_signer_proofs(
                 .arg("nsequence")
                 .arg("--config")
                 .arg("-")
-                .arg("--output")
-                .arg("-")
                 .arg("--proof-kind")
                 .arg("fast")
                 .stdin(Stdio::piped())
