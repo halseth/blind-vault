@@ -2,6 +2,27 @@
 
 This is a Rust implementation of a Bitcoin vault system using blind co-signers that enables secure Bitcoin storage through multi-signature schemes with privacy-preserving blind signing protocols.
 
+## Prerequisites
+
+Before using this system, ensure you have the following tools installed:
+
+1. **Zero-Knowledge Proof Tools** (required for vault operations):
+   ```bash
+   # Install zk-musig for MuSig2 signature proofs
+   cargo install --path /path/to/zk-musig/host
+
+   # Install zk-tx for transaction property proofs
+   cargo install --path /path/to/zk-tx/host
+   ```
+
+2. **Development Mode** (for testing and development):
+   ```bash
+   # Set RISC0_DEV_MODE to use faster, non-production proofs
+   export RISC0_DEV_MODE=1
+   ```
+
+   **Note**: `RISC0_DEV_MODE=1` disables cryptographic proof generation for faster development. Only use this for testing on regtest/testnet. Never use in production.
+
 ## Usage
 
 ### Complete Example: Fund, Deposit, and Unvault
@@ -105,8 +126,10 @@ Note: The `session_data` is the JSON output from the create command and contains
 3. **Client** creates three transactions:
    - **Unvault transaction**: Spends vault output to new output with same aggregated key
    - **Recovery transaction**: Spends unvault output to recovery address (immediate)
-   - **Sweep transaction**: Spends unvault output to destination address (timelocked)
-4. **Signers** verify ZK proofs and blind-sign all three transactions using "UNVAULT" and "FINAL" transaction types
+   - **Sweep transaction**: Spends unvault output to destination address (timelocked using nSequence)
+4. **Signers** verify ZK proofs and blind-sign all three transactions:
+   - **UNVAULT**: Uses MuSig2 proof for unvault and recovery transactions
+   - **FINAL**: Uses both MuSig2 proof and nSequence proof with message commitment binding for sweep transaction
 5. **Depositor** receives all three pre-signed transactions and can broadcast them as needed:
    - Broadcast unvault transaction to start the unvault process
    - Either broadcast recovery transaction immediately, or wait for timelock and broadcast sweep transaction
@@ -115,6 +138,9 @@ Note: The `session_data` is the JSON output from the create command and contains
 
 - **Privacy**: Signers cannot see the actual transaction data due to blind signatures
 - **Safety**: Pre-signed recovery transactions ensure funds can always be recovered
-- **Flexibility**: Timelock allows for delayed final spending while maintaining immediate recovery option
-- **Verification**: ZK proofs ensure transaction validity without revealing sensitive information
+- **Flexibility**: Relative timelock (nSequence) allows for delayed final spending while maintaining immediate recovery option
+- **Verification**: ZK proofs ensure transaction validity without revealing sensitive information:
+  - **MuSig2 proofs**: Verify signature aggregation and commitment structure
+  - **nSequence proofs**: Verify relative timelocks on final spend transactions
+  - **Message commitment binding**: Ensures consistency between MuSig2 and nSequence proofs
 

@@ -18,30 +18,67 @@ The `vault` script provides five main commands to manage your vault:
    - `jq` - JSON processor for state management
    - `cargo` - Rust toolchain for building components
    - `bitcoin-cli` - Bitcoin Core RPC client
+   - `zk-musig` - Zero-knowledge proof tool for MuSig2 signatures
+   - `zk-tx` - Zero-knowledge proof tool for transaction properties
 
-2. **Running services:**
+2. **Installing ZK proof tools:**
+   ```bash
+   # Install zk-musig (must be in PATH)
+   cargo install --path /path/to/zk-musig/host
+
+   # Install zk-tx (must be in PATH)
+   cargo install --path /path/to/zk-tx/host
+
+   # Verify installation
+   which zk-musig
+   which zk-tx
+   ```
+
+3. **Running services:**
    - Bitcoin Core node (signet/testnet/regtest)
    - Signer server(s) running on configured ports
    - Client server running and connected to signers
 
-3. **Wallet setup:**
+4. **Wallet setup:**
    ```bash
    cd wallet
    cargo run -- --new --network signet
    ```
 
+5. **Development mode** (optional, for faster testing):
+   ```bash
+   # Set RISC0_DEV_MODE to skip cryptographic proof generation
+   export RISC0_DEV_MODE=1
+
+   # Then run vault commands as normal
+   ./vault fund
+   ```
+
+   **Warning**: Only use `RISC0_DEV_MODE=1` for development/testing on regtest or testnet. Never use in production.
+
 ## Quick Start
 
 ### 1. Start the required services
 
+First, create a client configuration file `client-config.json`:
+```json
+{
+  "signers": ["127.0.0.1:8080"],
+  "network": "signet",
+  "static_fee": "0.00001 BTC"
+}
+```
+
+Then start the services:
 ```bash
 # Terminal 1: Start signer
 cd signer/
-cargo run -- --listen="127.0.0.1:8080"
+cargo run -- --listen="127.0.0.1:8080" --priv-key="<signer_private_key>"
 
-# Terminal 2: Start client
+# Terminal 2: Start client (with RISC0_DEV_MODE for development)
 cd client/
-cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --network signet --static-fee "0.00001 BTC"
+export RISC0_DEV_MODE=1  # Optional: for faster development/testing
+cargo run -- --listen 127.0.0.1:8090 --cfg client-config.json
 ```
 
 ### 2. Fund your wallet address
@@ -374,6 +411,22 @@ export BITCOIN_CLI_ARGS="-regtest"
 
 ## Troubleshooting
 
+### "zk-musig: command not found" or "zk-tx: command not found"
+Install the ZK proof tools:
+```bash
+# Install zk-musig
+cd /path/to/zk-musig
+cargo install --path host
+
+# Install zk-tx
+cd /path/to/zk-tx
+cargo install --path host
+
+# Verify they're in your PATH
+which zk-musig
+which zk-tx
+```
+
 ### "No keys found in wallet"
 ```bash
 cd wallet
@@ -387,10 +440,11 @@ bitcoin-cli -signet sendtoaddress <address> 0.001
 ```
 
 ### "Client connection refused"
-Ensure client server is running:
+Ensure client server is running with proper configuration:
 ```bash
 cd client
-cargo run -- --listen 127.0.0.1:8090 --cfg '{"signers":["127.0.0.1:8080"]}' --network signet --static-fee "0.00001 BTC"
+# Make sure client-config.json exists with proper settings
+cargo run -- --listen 127.0.0.1:8090 --cfg client-config.json
 ```
 
 ### "Timelock not yet expired"
