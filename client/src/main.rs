@@ -246,10 +246,7 @@ async fn sign_vault_impl(
     let vault_recovery_psbt = sign_psbt(
         recovery_psbt,
         sessions.clone(),
-        &key_agg_ctx,
-        tweaked_aggregated_pubkey,
-        &pubkeys,
-        &public_nonces,
+        0,              // nonce_index
         &coeff_salt,
         "VAULT",
         &session_data,
@@ -311,15 +308,10 @@ async fn sign_vault_impl(
     }];
 
     // Sign unvault recovery with nonce 1
-    let (_, public_nonces_1, _, _) = aggregate_pubs(&sessions, Some(&coeff_salt), 1);
-
     let unvault_recovery_psbt_signed = sign_psbt(
         unvault_recovery_psbt,
         sessions.clone(),
-        &key_agg_ctx,
-        tweaked_aggregated_pubkey,
-        &pubkeys,
-        &public_nonces_1,
+        1,              // nonce_index
         &coeff_salt,
         "RECOVERY",
         &session_data,
@@ -464,16 +456,11 @@ async fn sign_unvault_impl(
     }];
 
     // Sign unvault with nonce 2
-    let (_, public_nonces_2, _, _) = aggregate_pubs(&sessions, Some(&coeff_salt), 2);
-
     println!("\nSigning unvault transaction (using nonce 2)...");
     let signed_unvault_psbt = sign_psbt(
         unvault_psbt,
         sessions.clone(),
-        &key_agg_ctx,
-        tweaked_pubkey,
-        &pubkeys,
-        &public_nonces_2,
+        2,              // nonce_index
         &coeff_salt,
         "UNVAULT",
         session_data,
@@ -508,16 +495,11 @@ async fn sign_unvault_impl(
     }];
 
     // Sign final spend with nonce 3
-    let (_, public_nonces_3, _, _) = aggregate_pubs(&sessions, Some(&coeff_salt), 3);
-
     println!("\nSigning final spend transaction (using nonce 3)...");
     let signed_final_spend_psbt = sign_psbt(
         final_psbt,
         sessions.clone(),
-        &key_agg_ctx,
-        tweaked_pubkey,
-        &pubkeys,
-        &public_nonces_3,
+        3,              // nonce_index
         &coeff_salt,
         "FINAL",
         session_data,
@@ -1150,14 +1132,17 @@ fn create_final_spend_transaction(
 async fn sign_psbt(
     mut psbt: Psbt,
     sessions: Vec<SigningSession>,
-    key_agg_ctx: &KeyAggContext,
-    tweaked_aggregated_pubkey: Point,
-    pubkeys: &Vec<PublicKey>,
-    public_nonces: &Vec<PubNonce>,
+    nonce_index: usize,
     coeff_salt: &[u8; 32],
     tx_type: &str,
     session_data: &VaultSessionData,
 ) -> Result<Psbt, Box<dyn std::error::Error>> {
+    // Aggregate public keys and nonces internally
+    let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
+        aggregate_pubs(&sessions, Some(coeff_salt), nonce_index);
+
+    let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
+
     // Extract the sighash message from the PSBT
     let tx = psbt.unsigned_tx.clone();
     let mut cache = SighashCache::new(&tx);
