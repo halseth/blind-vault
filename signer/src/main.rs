@@ -194,14 +194,15 @@ async fn session_sign(
 
     // Handle different transaction types
     match req.tx_type.as_str() {
-        "VAULT" => {
-            println!("Processing VAULT transaction");
-            // Vault transactions are the initial deposit into the aggregated key
-            // Here we sign a recovery transaction spending from an input we are part of.
+        "VAULT_RECOVERY" => {
+            println!("Processing VAULT_RECOVERY transaction");
+            // Vault recovery transactions spend from the vault output to the recovery address
+            // This is pre-signed during the deposit phase
         },
-        "RECOVERY" => {
-            println!("Processing RECOVERY transaction");
-            // Recovery transactions spend to a committed recovery address
+        "UNVAULT_RECOVERY" => {
+            println!("Processing UNVAULT_RECOVERY transaction");
+            // Unvault recovery transactions spend from the unvault output to the recovery address
+            // This is also pre-signed during the deposit phase
         },
         "UNVAULT" => {
             println!("Processing UNVAULT transaction");

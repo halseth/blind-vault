@@ -246,9 +246,8 @@ async fn sign_vault_impl(
     let vault_recovery_psbt = sign_psbt(
         recovery_psbt,
         sessions.clone(),
-        0,              // nonce_index
         &coeff_salt,
-        "VAULT",
+        "VAULT_RECOVERY",
         &session_data,
     )
     .await?;
@@ -311,9 +310,8 @@ async fn sign_vault_impl(
     let unvault_recovery_psbt_signed = sign_psbt(
         unvault_recovery_psbt,
         sessions.clone(),
-        1,              // nonce_index
         &coeff_salt,
-        "RECOVERY",
+        "UNVAULT_RECOVERY",
         &session_data,
     )
     .await?;
@@ -460,7 +458,6 @@ async fn sign_unvault_impl(
     let signed_unvault_psbt = sign_psbt(
         unvault_psbt,
         sessions.clone(),
-        2,              // nonce_index
         &coeff_salt,
         "UNVAULT",
         session_data,
@@ -499,7 +496,6 @@ async fn sign_unvault_impl(
     let signed_final_spend_psbt = sign_psbt(
         final_psbt,
         sessions.clone(),
-        3,              // nonce_index
         &coeff_salt,
         "FINAL",
         session_data,
@@ -1132,11 +1128,19 @@ fn create_final_spend_transaction(
 async fn sign_psbt(
     mut psbt: Psbt,
     sessions: Vec<SigningSession>,
-    nonce_index: usize,
     coeff_salt: &[u8; 32],
     tx_type: &str,
     session_data: &VaultSessionData,
 ) -> Result<Psbt, Box<dyn std::error::Error>> {
+    // Map tx_type to nonce_index
+    let nonce_index = match tx_type {
+        "VAULT_RECOVERY" => 0,
+        "UNVAULT_RECOVERY" => 1,
+        "UNVAULT" => 2,
+        "FINAL" => 3,
+        _ => return Err(format!("Unknown transaction type: {}", tx_type).into()),
+    };
+
     // Aggregate public keys and nonces internally
     let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
         aggregate_pubs(&sessions, Some(coeff_salt), nonce_index);
