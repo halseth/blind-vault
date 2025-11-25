@@ -507,7 +507,6 @@ async fn sign_unvault_impl(
     let resp = VaultUnvaultResp {
         unvault_psbt: signed_unvault_psbt,
         final_spend_psbt: signed_final_spend_psbt,
-        unvault_pubkey: xpub.to_string(),
     };
 
     Ok(resp)

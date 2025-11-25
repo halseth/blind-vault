@@ -76,7 +76,6 @@ pub struct VaultUnvaultReq {
 pub struct VaultUnvaultResp {
     pub unvault_psbt: Psbt,
     pub final_spend_psbt: Psbt,
-    pub unvault_pubkey: String,
 }
 
 
