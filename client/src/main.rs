@@ -140,8 +140,8 @@ async fn sign_vault_impl(
 
     let coeff_salt = gen_coeff_salt();
 
-    let (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(&coeff_salt), 0);
+    let (pubkeys, key_agg_ctx) = aggregate_pubs(&sessions, Some(&coeff_salt));
+    let (public_nonces, aggregated_nonce) = aggregate_nonces(&sessions, 0);
 
     // Prepare session data early for use in signing operations as well as to return to depositor
     // for later use during unvault
@@ -412,7 +412,7 @@ async fn sign_unvault_impl(
         .collect();
 
     // Aggregate pubkeys and get the vault key
-    let (pubkeys, _, key_agg_ctx, _) = aggregate_pubs(&sessions, Some(&coeff_salt), 0);
+    let (pubkeys, key_agg_ctx) = aggregate_pubs(&sessions, Some(&coeff_salt));
 
     let untweaked_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
     let tweaked_pubkey: Point = key_agg_ctx.aggregated_pubkey();
@@ -984,16 +984,14 @@ fn gen_coeff_salt() -> [u8; 32] {
 fn aggregate_pubs(
     sessions: &Vec<SigningSession>,
     key_coeff_salt: Option<&[u8]>,
-    nonce_index: usize,
-) -> (Vec<PublicKey>, Vec<PubNonce>, KeyAggContext, AggNonce) {
-    let (pubkeys, public_nonces): (Vec<PublicKey>, Vec<PubNonce>) = sessions
+) -> (Vec<PublicKey>, KeyAggContext) {
+    let pubkeys: Vec<PublicKey> = sessions
         .iter()
         .map(|session| {
             let resp = session.init_resp.clone();
             let pk = parse_pubkey(resp.pubkey.as_str());
             //println!("pk: {}", pk);
-            let pn = PubNonce::from_hex(resp.pubnonces[nonce_index].as_str()).unwrap();
-            (pk, pn)
+            pk
         })
         .collect();
 
@@ -1004,9 +1002,24 @@ fn aggregate_pubs(
     let aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
     println!("taptweaked agg pubkey X: {}", aggregated_pubkey);
 
+    (pubkeys, key_agg_ctx)
+}
+
+fn aggregate_nonces(
+    sessions: &Vec<SigningSession>,
+    nonce_index: usize,
+) -> (Vec<PubNonce>, AggNonce) {
+    let public_nonces: Vec<PubNonce> = sessions
+        .iter()
+        .map(|session| {
+            let resp = session.init_resp.clone();
+            PubNonce::from_hex(resp.pubnonces[nonce_index].as_str()).unwrap()
+        })
+        .collect();
+
     // We manually aggregate the nonces together and then construct our partial signature.
     let aggregated_nonce: AggNonce = public_nonces.iter().sum();
-    (pubkeys, public_nonces, key_agg_ctx, aggregated_nonce)
+    (public_nonces, aggregated_nonce)
 }
 
 fn parse_pubkey(pub_str: &str) -> PublicKey {
@@ -1141,9 +1154,9 @@ async fn sign_psbt(
         _ => return Err(format!("Unknown transaction type: {}", tx_type).into()),
     };
 
-    // Aggregate public keys and nonces internally
-    let (pubkeys, public_nonces, key_agg_ctx, _aggregated_nonce) =
-        aggregate_pubs(&sessions, Some(coeff_salt), nonce_index);
+    // Aggregate public keys and nonces separately
+    let (pubkeys, key_agg_ctx) = aggregate_pubs(&sessions, Some(coeff_salt));
+    let (public_nonces, _aggregated_nonce) = aggregate_nonces(&sessions, nonce_index);
 
     let tweaked_aggregated_pubkey: Point = key_agg_ctx.aggregated_pubkey();
 
