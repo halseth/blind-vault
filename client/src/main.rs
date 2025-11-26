@@ -141,7 +141,6 @@ async fn sign_vault_impl(
     let coeff_salt = gen_coeff_salt();
 
     let (pubkeys, key_agg_ctx) = aggregate_pubs(&sessions, Some(&coeff_salt));
-    let (public_nonces, aggregated_nonce) = aggregate_nonces(&sessions, 0);
 
     // Prepare session data early for use in signing operations as well as to return to depositor
     // for later use during unvault
@@ -268,11 +267,21 @@ async fn sign_vault_impl(
         .unwrap();
     println!("Vault Recovery Transaction Result: {:#?}", res);
 
+    // Hash the coeff salt to make another salt for the unvault tx.
+    let mut hasher = Sha256::new();
+    hasher.update(coeff_salt);
+    let final_coeff_salt: [u8; 32] = hasher.finalize().into();
+
+    let (_, final_key_agg_ctx) = aggregate_pubs(&sessions, Some(&final_coeff_salt));
+    let final_pubkey: Point = final_key_agg_ctx.aggregated_pubkey_untweaked();
+    let final_pk = bitcoin::secp256k1::PublicKey::from_slice(&final_pubkey.serialize()).unwrap();
+    let (final_xpub, _) = final_pk.x_only_public_key();
+    let unvault_scriptpubkey = Address::p2tr(&secp, final_xpub, None, cfg.network).script_pubkey();
     // Create deterministic unvault transaction to predict txid
     let unvault_tx_template = create_unvault_transaction(
         op,              // vault outpoint
         utxos[0].value,  // vault amount
-        sp.clone(),      // vault scriptpubkey (same key for unvault)
+        unvault_scriptpubkey.clone(),
         static_fee,
     );
 
@@ -310,7 +319,7 @@ async fn sign_vault_impl(
     let unvault_recovery_psbt_signed = sign_psbt(
         unvault_recovery_psbt,
         sessions.clone(),
-        &coeff_salt,
+        &final_coeff_salt,
         "UNVAULT_RECOVERY",
         &session_data,
     )
@@ -393,6 +402,11 @@ async fn sign_unvault_impl(
         .try_into()
         .map_err(|_| "coeff_salt must be 32 bytes")?;
 
+    // Hash the coeff salt to make another salt for the unvault tx.
+    let mut hasher = Sha256::new();
+    hasher.update(coeff_salt);
+    let final_coeff_salt: [u8; 32] = hasher.finalize().into();
+
     // Reconstruct signing sessions from stored data
     let sessions: Vec<SigningSession> = cfg.signers
         .iter()
@@ -412,10 +426,9 @@ async fn sign_unvault_impl(
         .collect();
 
     // Aggregate pubkeys and get the vault key
-    let (pubkeys, key_agg_ctx) = aggregate_pubs(&sessions, Some(&coeff_salt));
+    let (_, key_agg_ctx) = aggregate_pubs(&sessions, Some(&coeff_salt));
 
     let untweaked_pubkey: Point = key_agg_ctx.aggregated_pubkey_untweaked();
-    let tweaked_pubkey: Point = key_agg_ctx.aggregated_pubkey();
     let pk = bitcoin::secp256k1::PublicKey::from_slice(&untweaked_pubkey.serialize()).unwrap();
     let (xpub, _) = pk.x_only_public_key();
 
@@ -431,11 +444,17 @@ async fn sign_unvault_impl(
     let unvault_amount = vault_amount.checked_sub(static_fee)
         .ok_or_else(|| "Fee exceeds vault amount")?;
 
+    // Sign final spend with nonce 3. It will be the output key of the unvault tx.
+    let (_, final_key_agg_ctx) = aggregate_pubs(&sessions, Some(&final_coeff_salt));
+    let final_pubkey: Point = final_key_agg_ctx.aggregated_pubkey_untweaked();
+    let final_pk = bitcoin::secp256k1::PublicKey::from_slice(&final_pubkey.serialize()).unwrap();
+    let (final_xpub, _) = final_pk.x_only_public_key();
+    let unvault_scriptpubkey = Address::p2tr(&secp, final_xpub, None, cfg.network).script_pubkey();
     // Use helper function to create the unvault transaction
     let unvault_tx = create_unvault_transaction(
         vault_outpoint,
         vault_amount,
-        vault_scriptpubkey.clone(),
+        unvault_scriptpubkey.clone(),
         static_fee,
     );
 
@@ -486,7 +505,7 @@ async fn sign_unvault_impl(
     final_psbt.inputs = vec![Input {
         witness_utxo: Some(TxOut {
             value: unvault_amount,
-            script_pubkey: vault_scriptpubkey.clone(),
+            script_pubkey: unvault_scriptpubkey.clone(),
         }),
         ..Default::default()
     }];
@@ -496,7 +515,7 @@ async fn sign_unvault_impl(
     let signed_final_spend_psbt = sign_psbt(
         final_psbt,
         sessions.clone(),
-        &coeff_salt,
+        &final_coeff_salt,   // FIXED: use final_coeff_salt
         "FINAL",
         session_data,
     )
