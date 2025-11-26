@@ -1,16 +1,29 @@
 # Bitcoin Vault System with Blind Co-Signers
 
-This is a Rust implementation of a Bitcoin vault system using blind co-signers that enables secure Bitcoin storage through multi-signature schemes with privacy-preserving blind signing protocols.
+This is a Proof-of-Concept implementation of a Bitcoin vault system using blind 
+co-signers to enable unvault and recovery mechanismsm wihout a covenant. 
+
+The use of a blinded variant of the Musig2 multi-signature scheme helps
+preserving the privacy of the vault user both in terms of on-chain and
+co-signer fingerprint.
+
+NOTE: this project is considered a prototype and should not be used with real
+funds.
 
 ## Prerequisites
 
 Before using this system, ensure you have the following tools installed:
 
 1. **Zero-Knowledge Proof Tools** (required for vault operations):
+
+    [zk-musig](https://github.com/halseth/zk-musig)
    ```bash
    # Install zk-musig for MuSig2 signature proofs
    cargo install --path /path/to/zk-musig/host
+   ```
 
+    [zk-tx](https://github.com/halseth/zk-tx)
+   ```bash
    # Install zk-tx for transaction property proofs
    cargo install --path /path/to/zk-tx/host
    ```
@@ -21,13 +34,16 @@ Before using this system, ensure you have the following tools installed:
    export RISC0_DEV_MODE=1
    ```
 
-   **Note**: `RISC0_DEV_MODE=1` disables cryptographic proof generation for faster development. Only use this for testing on regtest/testnet. Never use in production.
+   **Note**: `RISC0_DEV_MODE=1` disables cryptographic proof generation for
+   faster development. Only use this for testing, never in any kind of
+   production setting.
 
 ## Usage
 
 ### Complete Example: Fund, Deposit, and Unvault
 
-This example walks through the full flow using the wallet tool to manage keys and fund a UTXO on signet.
+This example walks through the full flow using the wallet tool to manage keys
+and fund a UTXO on signet.
 
 #### 0. Generate a key and fund it on signet
 
@@ -50,7 +66,7 @@ Generated new key:
 
 ```bash
 $ cd signer/
-$ cargo run -- --listen="127.0.0.1:8080" --priv-key="c28a9f80738efe7b628cc2b68d7f8d2d6b5633ce8b0f3e7d3b6d8a9f8e2b9c1d"
+$ cargo run --release -- --listen="127.0.0.1:8080" --priv-key="c28a9f80738efe7b628cc2b68d7f8d2d6b5633ce8b0f3e7d3b6d8a9f8e2b9c1d"
 ```
 
 #### 2. Start the client
@@ -67,7 +83,7 @@ First create a config file `client-config.json`:
 Then start the client:
 ```bash
 $ cd client/
-$ cargo run -- --listen 127.0.0.1:8090 --cfg client-config.json
+$ cargo run --release -- --listen 127.0.0.1:8090 --cfg client-config.json
 ```
 
 #### 3. Create a vault deposit
@@ -107,40 +123,53 @@ $ cargo run -- unvault \
   --client-url "127.0.0.1:8090"
 ```
 
-Note: The `session_data` is the JSON output from the create command and contains the aggregated public key and other session information needed to reconstruct the vault.
+Note: The `session_data` is the JSON output from the create command and
+contains the aggregated public key and other session information needed to
+reconstruct the vault.
 
 ## How It Works
 
 ### Vault Deposit Flow
 
-1. **Depositor** creates a deposit PSBT transaction to a yet-to-be-determined public key and sends it to the client
-2. **Client** contacts all signers to receive fresh public keys and nonces, then assembles the aggregated vault public key
-3. **Client** creates a recovery transaction spending from the deposit to the recovery address
-4. **Signers** verify ZK proofs and blind-sign the recovery transaction using the "RECOVERY" transaction type
-5. **Depositor** receives the signed deposit PSBT and pre-signed recovery transaction, verifies them, then signs and broadcasts the deposit
+1. **Depositor** creates a deposit PSBT transaction to a yet-to-be-determined
+   public key and sends it to the client, and sets vault parameters like
+   recovery address and unvault grace period.
+2. **Client** contacts all signers to receive fresh public keys and nonces,
+   then assembles the aggregated vault public key
+3. **Client** creates a recovery transaction spending from the deposit to the
+   recovery address, an unvault transaction spending from the deposit to a
+   new aggregate public key, and a recovery transcation spending from
+   this new key to the recovery address.
+4. **Signers** blind-sign the vault recovery, unvault and unvault recovery
+   transactions 
+5. **Depositor** receives the signed deposit PSBT and pre-signed vault
+   recovery, unvault and unvault recovery transactions, verifies them, then
+   signs and broadcasts the deposit
 
 ### Vault Unvault Flow
 
-1. **Depositor** initiates unvault with vault outpoint, destination address, recovery address, and timelock period
-2. **Client** generates the same aggregated public key as the original vault deposit
-3. **Client** creates three transactions:
-   - **Unvault transaction**: Spends vault output to new output with same aggregated key
-   - **Recovery transaction**: Spends unvault output to recovery address (immediate)
-   - **Sweep transaction**: Spends unvault output to destination address (timelocked using nSequence)
-4. **Signers** verify ZK proofs and blind-sign all three transactions:
-   - **UNVAULT**: Uses MuSig2 proof for unvault and recovery transactions
-   - **FINAL**: Uses both MuSig2 proof and nSequence proof with message commitment binding for sweep transaction
-5. **Depositor** receives all three pre-signed transactions and can broadcast them as needed:
-   - Broadcast unvault transaction to start the unvault process
-   - Either broadcast recovery transaction immediately, or wait for timelock and broadcast sweep transaction
+1. **Depositor** initiates unvault to a destination address.
+2. **Client** generates a timelocked finalization tx that spends the unvault
+   output to the final destination.
+3. **Client** creates a ZK proof proving to the signers that the transaction is
+   timelocked according to the vault policy.
+4. **Signers** verify ZK proofs and blind-sign the finalization tx.
+5. **Depositor** receives the finalization tx, verifies it and broadcast the
+   unvault tx.
+6. **Depositor** braodcasts final tx when timelock has expired.
 
 ### Security Model
 
-- **Privacy**: Signers cannot see the actual transaction data due to blind signatures
-- **Safety**: Pre-signed recovery transactions ensure funds can always be recovered
-- **Flexibility**: Relative timelock (nSequence) allows for delayed final spending while maintaining immediate recovery option
-- **Verification**: ZK proofs ensure transaction validity without revealing sensitive information:
+- **Privacy**: Signers cannot see the actual transaction data due to blind
+  signatures
+- **Safety**: Pre-signed recovery transactions ensure funds can always be
+  recovered
+- **Flexibility**: Relative timelock (nSequence) allows for delayed final
+  spending while maintaining immediate recovery option
+- **Verification**: ZK proofs ensure transaction validity without revealing
+  sensitive information:
   - **MuSig2 proofs**: Verify signature aggregation and commitment structure
   - **nSequence proofs**: Verify relative timelocks on final spend transactions
-  - **Message commitment binding**: Ensures consistency between MuSig2 and nSequence proofs
+  - **Message commitment binding**: Ensures consistency between MuSig2 and
+    nSequence proofs
 
