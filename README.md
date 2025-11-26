@@ -1,7 +1,7 @@
 # Bitcoin Vault System with Blind Co-Signers
 
-This is a Proof-of-Concept implementation of a Bitcoin vault system using blind 
-co-signers to enable unvault and recovery mechanismsm wihout a covenant. 
+This is a Proof-of-Concept implementation of a Bitcoin vault system using blind
+co-signers to enable unvault and recovery mechanisms without a covenant. 
 
 The use of a blinded variant of the Musig2 multi-signature scheme helps
 preserving the privacy of the vault user both in terms of on-chain and
