@@ -9,3 +9,6 @@
 client/receipt.txt
 wallet/wallet.json
 vault-state.json
+CLAUDE.md
+client/client-config.json
+client-config.json
