@@ -102,8 +102,8 @@ noticed by the depositor, such that the unvault recovery transaction can be
 broadcast.
 
 3) gain control of the keys for the recovery address, then get the user to
-trigger a recovery. In other words, it is important that the recovery addess is
-also a safe, cold-storage destination or custodian.
+trigger a recovery. In other words, it is important that the recovery address is
+a safe cold-storage destination or custodian.
 
 ### Failure scenarios
 In addition to key theft, there's a few failure scenarios the architecture is
@@ -112,6 +112,20 @@ designed to handle.
 - If one or more of the signers disappear before the final transaction has been
   signed, one can always broadcast one of the recovery transactions to reclaim
   the money from the vault.
+
+- If one of the signers refuses to sign the final transaction (for any reason),
+  the user can also in this case reclaim the money by using the recovery
+  transcation.
+
+- If at most N-1 of the signers are compromised, they cannot create a valid
+  signature for the aggregate public key, and the worst thing they can achieve
+  is to refuse to sign a legit unvault request (see above scenario).
+
+- If the client software is compromised, the attacker can learn who the
+  signers, and unblind any message sent to them. This means that the user has
+  their privacy compromised. The attacker cannot easily steal the money in the
+  vault, however, since the depositor always has their recovery transactions in
+  case of an unauthenticated unvault.
 
 ### Details
 
