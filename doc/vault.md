@@ -86,6 +86,30 @@ implementation by passing PSBTs around.
     deposit and move the funds to the vault, knowing it has recovery options
     for both the vault and unvault states.
 
+```mermaid
+classDiagram
+    vault <|-- vault_recovery
+    vault <|-- unvault
+    unvault <|-- unvault_recovery
+    unvault <|-- final
+
+    class vault{
+      aggregate_key
+    }
+    class vault_recovery{
+      recovery_address
+    }
+    class unvault{
+      aggregate_key'
+    }
+    class final{
+      destination_address
+    }
+    class unvault_recovery{
+      recovery_address
+    }
+```
+
 ### Security
 The security of the setup relies on the assumption that _at least one of the
 signers_ act according to the protocol. This is most easily ensured by the
