@@ -122,10 +122,10 @@ designed to handle.
   is to refuse to sign a legit unvault request (see above scenario).
 
 - If the client software is compromised, the attacker can learn who the
-  signers, and unblind any message sent to them. This means that the user has
-  their privacy compromised. The attacker cannot easily steal the money in the
-  vault, however, since the depositor always has their recovery transactions in
-  case of an unauthenticated unvault.
+  signers are, and unblind any message sent to them. This means that the user
+  has their privacy compromised. The attacker cannot easily steal the money in
+  the vault, however, since the depositor always has their recovery
+  transactions in case of an unauthenticated unvault.
 
 ### Details
 
