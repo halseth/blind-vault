@@ -88,12 +88,12 @@ implementation by passing PSBTs around.
 
 ```mermaid
 classDiagram
-    vault <|-- vault_recovery
-    vault <|-- unvault
+    vault_deposit <|-- vault_recovery
+    vault_deposit <|-- unvault
     unvault <|-- unvault_recovery
     unvault <|-- final
 
-    class vault{
+    class vault_deposit{
       aggregate_key
     }
     class vault_recovery{
@@ -104,6 +104,7 @@ classDiagram
     }
     class final{
       destination_address
+      timelock(blocks)
     }
     class unvault_recovery{
       recovery_address
