@@ -173,3 +173,61 @@ reconstruct the vault.
   - **Message commitment binding**: Ensures consistency between MuSig2 and
     nSequence proofs
 
+### Benchmarks
+A simple run of the involving two signer on a Apple M1 Max, 32 GB shows the following: 
+```
+<vault recovery tx>
+[TIMING] Starting zk-musig proof generation for signer 0
+[TIMING] zk-musig proof generation for signer 0 took 230.22s
+[TIMING] Starting zk-musig proof generation for signer 1
+[TIMING] zk-musig proof generation for signer 1 took 230.51s
+
+<unvault recovery tx>
+[TIMING] Starting zk-musig proof generation for signer 0
+[TIMING] zk-musig proof generation for signer 0 took 234.11s
+[TIMING] Starting zk-musig proof generation for signer 1
+[TIMING] zk-musig proof generation for signer 1 took 231.43s
+
+<unvault tx>
+[TIMING] Starting zk-musig proof generation for signer 0
+[TIMING] zk-musig proof generation for signer 0 took 229.04s
+[TIMING] Starting zk-musig proof generation for signer 1
+[TIMING] zk-musig proof generation for signer 1 took 224.93s
+
+<final tx>
+[TIMING] Starting zk-musig proof generation for signer 0
+[TIMING] zk-musig proof generation for signer 0 took 226.50s
+[TIMING] Starting zk-tx nSequence proof generation for signer 0
+[TIMING] zk-tx nSequence proof generation for signer 0 took 11.68s
+[TIMING] Starting zk-musig proof generation for signer 1
+[TIMING] zk-musig proof generation for signer 1 took 225.96s
+[TIMING] Starting zk-tx nSequence proof generation for signer 1
+[TIMING] zk-tx nSequence proof generation for signer 1 took 12.01s
+```
+
+and verification on the signer:
+```
+<vault recovery tx>
+[TIMING] Starting zk-musig proof verification
+[TIMING] zk-musig proof verification took 0.08s
+
+<unvault recovery tx>
+[TIMING] Starting zk-musig proof verification
+[TIMING] zk-musig proof verification took 0.07s
+
+<unvault tx>
+[TIMING] Starting zk-musig proof verification
+[TIMING] zk-musig proof verification took 0.07s
+
+<final tx>
+[TIMING] Starting zk-musig proof verification
+[TIMING] zk-musig proof verification took 0.10s
+
+[TIMING] Starting zk-tx nSequence proof verification
+[TIMING] zk-tx nSequence proof verification took 0.02s
+```
+
+In other words, it is especially the Musig2 proof that is time consuming to
+create (almost 4 minutes per tx per signer). Future work is to improve this by
+using a mor optimized ZK prover, or change to a signature scheme that is more
+proving friendly.
