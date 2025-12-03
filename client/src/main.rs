@@ -30,6 +30,7 @@ use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::io::Write;
 use std::str::FromStr;
+use std::time::Instant;
 
 #[derive(Debug, Parser)]
 #[command(verbatim_doc_comment)]
@@ -240,6 +241,28 @@ async fn sign_vault_impl(
     // pre-signed, and checked by the client and depositor before depositing. So the signers can blindly sign them, and just enforce a time lock on the last signing request.
     // I think we could even remove the vault recovery tx if we have the unvault+unvault recoveyr be presigned. That avoids one more set of ZK proofs.
     // So we just need a timelock proof.
+    //
+    // or is it better to defer signing the unvault recovery at unvault time?
+    // - If we never get to use it (we want to go recovery immediately, or signers are offline), then we avoid the extra signing step
+    // . we avoid that we accidentlay broadcast the unvault tx if we cannot reach the signers to sign the final tx
+    // - I think the tow steps can be broken up into two signing sessions, where only the second one has to enforce a timelock
+    //     - or is this harder? One has to enforce that the second signing session has a timelock,
+    //      and that it is consistent with what was committend in the first session.
+    //      THe second session must also spend from the key of the first session, so it misght not be possible to seperathe them.
+    //
+    // pros of pre-signing it during vaulting:
+    // we can verify the vault recovery transaction immediatley. We dont have to rely on deterministically recreatine it.
+    //
+    // Possible attack with malicous client software:
+    // It gets a presigned unvault and final tx,, but dont tell the depositor about. It can then
+    // try to broadcast the unvault at a time the dpositor is not watching, and claim the final
+    // destination.
+    // -- Maybe this is not really a problem, since the deopsitur must always watch for a unknown
+    // unvault. The security relies on the signers only signing 4 times, and that the user has all
+    // 4 transactions when a unvault is seen on chain.
+    //
+    // So next steps: Keep as it, but try different salt for the key. Make sure the  it is solid
+    // wrt enforcing timelock, and that the signers verify they pay to correct new key and destination
 
     // Sign the vault recovery PSBT (uses nonce 0)
     let vault_recovery_psbt = sign_psbt(
@@ -259,6 +282,7 @@ async fn sign_vault_impl(
     println!("Raw deposit Transaction: {}", serialized_deposit);
     println!("Raw vault recovery Transaction: {}", serialized_vault_recovery);
 
+    // Verify vault recovery
     let res = vault_recovery_tx
         .verify(|op| {
             println!("fetching op {}", op);
@@ -277,6 +301,10 @@ async fn sign_vault_impl(
     let final_pk = bitcoin::secp256k1::PublicKey::from_slice(&final_pubkey.serialize()).unwrap();
     let (final_xpub, _) = final_pk.x_only_public_key();
     let unvault_scriptpubkey = Address::p2tr(&secp, final_xpub, None, cfg.network).script_pubkey();
+
+    println!("VAULT CREATION - final_xpub: {}", final_xpub);
+    println!("VAULT CREATION - unvault_scriptpubkey: {}", hex::encode(unvault_scriptpubkey.as_bytes()));
+
     // Create deterministic unvault transaction to predict txid
     let unvault_tx_template = create_unvault_transaction(
         op,              // vault outpoint
@@ -290,7 +318,10 @@ async fn sign_vault_impl(
     println!("Predicted unvault txid: {}", predicted_unvault_txid);
 
     let unvault_amount = (utxos[0].value - static_fee).unwrap();
-    let unvault_scriptpubkey = sp.clone();
+
+    println!("VAULT CREATION - Predicted unvault txid: {}", predicted_unvault_txid);
+    println!("VAULT CREATION - unvault_amount: {}", unvault_amount);
+    println!("VAULT CREATION - Unvault recovery spending from: {}:0", predicted_unvault_txid);
 
     // Create unvault recovery tx using predicted txid and helper
     let unvault_outpoint = OutPoint {
@@ -325,6 +356,9 @@ async fn sign_vault_impl(
     )
     .await?;
 
+
+    // TODO: also sign unvault her
+    // TODO: Verify vault recovery
     let unvault_recovery_tx_signed = unvault_recovery_psbt_signed.clone().extract_tx().unwrap();
     let serialized_unvault_recovery = consensus::encode::serialize_hex(&unvault_recovery_tx_signed);
     println!("Unvault Recovery Transaction Details: {:#?}", unvault_recovery_tx_signed);
@@ -407,6 +441,7 @@ async fn sign_unvault_impl(
     hasher.update(coeff_salt);
     let final_coeff_salt: [u8; 32] = hasher.finalize().into();
 
+
     // Reconstruct signing sessions from stored data
     let sessions: Vec<SigningSession> = cfg.signers
         .iter()
@@ -450,6 +485,10 @@ async fn sign_unvault_impl(
     let final_pk = bitcoin::secp256k1::PublicKey::from_slice(&final_pubkey.serialize()).unwrap();
     let (final_xpub, _) = final_pk.x_only_public_key();
     let unvault_scriptpubkey = Address::p2tr(&secp, final_xpub, None, cfg.network).script_pubkey();
+
+    println!("UNVAULT - final_xpub: {}", final_xpub);
+    println!("UNVAULT - unvault_scriptpubkey: {}", hex::encode(unvault_scriptpubkey.as_bytes()));
+
     // Use helper function to create the unvault transaction
     let unvault_tx = create_unvault_transaction(
         vault_outpoint,
@@ -460,6 +499,10 @@ async fn sign_unvault_impl(
 
     let unvault_txid = unvault_tx.compute_txid();
     println!("Unvault txid: {}", unvault_txid);
+
+    println!("UNVAULT - Actual unvault txid: {}", unvault_txid);
+    println!("UNVAULT - unvault_amount: {}", unvault_amount);
+    println!("UNVAULT - vault_outpoint: {}", vault_outpoint);
 
     let mut unvault_psbt = Psbt::from_unsigned_tx(unvault_tx)
         .map_err(|e| format!("PSBT creation failed: {}", e))?;
@@ -472,7 +515,7 @@ async fn sign_unvault_impl(
         ..Default::default()
     }];
 
-    // Sign unvault with nonce 2
+    // Sign unvault with nonce 2.
     println!("\nSigning unvault transaction (using nonce 2)...");
     let signed_unvault_psbt = sign_psbt(
         unvault_psbt,
@@ -521,6 +564,8 @@ async fn sign_unvault_impl(
     )
     .await?;
     println!("✓ Final spend transaction signed");
+
+    // TODO: verify final tx
 
     // User already has unvault recovery tx from vault creation (pre-signed)
     let resp = VaultUnvaultResp {
@@ -718,6 +763,9 @@ async fn generate_signer_proofs(
         // Generate ZK proof using zk-musig CLI
         let zk_params_json = serde_json::to_string(&zk_params)?;
 
+        println!("[TIMING] Starting zk-musig proof generation for signer {}", i);
+        let musig_start = Instant::now();
+
         let mut cmd = Command::new("zk-musig");
         cmd.arg("prove")
             .arg("--config")
@@ -752,9 +800,15 @@ async fn generate_signer_proofs(
         }
 
         let musig_proof = String::from_utf8(output.stdout)?;
+        let musig_duration = musig_start.elapsed();
+        println!("[TIMING] zk-musig proof generation for signer {} took {:.2}s", i, musig_duration.as_secs_f64());
 
         // Parse zk-musig proof
         let musig_proof_json: serde_json::Value = serde_json::from_str(&musig_proof)?;
+
+        // TODO: here we must generate unvault proof showing it pays to the same key (just diff
+        // salt). A (better) alternative is to sign the unvault tx at setup and have the depositor
+        // verify it before depositing.
 
         // Generate zk-tx nSequence proof if this is a FINAL transaction
         // For FINAL transactions, we also need to verify message_commitment matching
@@ -808,6 +862,9 @@ async fn generate_signer_proofs(
             });
 
             // Call zk-tx to generate proof
+            println!("[TIMING] Starting zk-tx nSequence proof generation for signer {}", i);
+            let zk_tx_start = Instant::now();
+
             let mut zk_tx_cmd = Command::new("zk-tx");
             zk_tx_cmd.arg("prove")
                 .arg("nsequence")
@@ -843,6 +900,9 @@ async fn generate_signer_proofs(
             }
 
             let nseq_proof_str = String::from_utf8(zk_tx_output.stdout)?;
+            let zk_tx_duration = zk_tx_start.elapsed();
+            println!("[TIMING] zk-tx nSequence proof generation for signer {} took {:.2}s", i, zk_tx_duration.as_secs_f64());
+
             let nseq_proof: serde_json::Value = serde_json::from_str(&nseq_proof_str)?;
 
             // Extract message_commitment from zk-tx proof
