@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::time::Instant;
 
 // This struct represents state
 struct AppState {
@@ -229,6 +230,8 @@ async fn session_sign(
 
     // Verify ZK proof using zk-musig CLI
     println!("Verifying ZK proof ({} bytes)", req.musig_proof.len());
+    println!("[TIMING] Starting zk-musig proof verification");
+    let musig_verify_start = Instant::now();
 
     let mut child = Command::new("zk-musig")
         .arg("verify")
@@ -266,6 +269,9 @@ async fn session_sign(
         eprintln!("Failed to parse verification output: {}", e);
         ErrorInternalServerError("Failed to parse verification output")
     })?;
+
+    let musig_verify_duration = musig_verify_start.elapsed();
+    println!("[TIMING] zk-musig proof verification took {:.2}s", musig_verify_duration.as_secs_f64());
 
     // Parse the JSON output from zk-musig verify
     let proof_output: ZkProofOutput = serde_json::from_str(&verification_output_str).map_err(|e| {
@@ -359,6 +365,8 @@ async fn session_sign(
             })?;
 
         println!("Verifying nSequence ZK proof...");
+        println!("[TIMING] Starting zk-tx nSequence proof verification");
+        let zk_tx_verify_start = Instant::now();
 
         // Verify zk-tx proof using zk-tx CLI
         let mut zk_tx_child = Command::new("zk-tx")
@@ -398,6 +406,9 @@ async fn session_sign(
             eprintln!("Failed to parse nsequence verification output: {}", e);
             ErrorInternalServerError("Failed to parse verification output")
         })?;
+
+        let zk_tx_verify_duration = zk_tx_verify_start.elapsed();
+        println!("[TIMING] zk-tx nSequence proof verification took {:.2}s", zk_tx_verify_duration.as_secs_f64());
 
         // Parse zk-tx verification output
         let nseq_verify: serde_json::Value = serde_json::from_str(&nseq_verification_str).map_err(|e| {
