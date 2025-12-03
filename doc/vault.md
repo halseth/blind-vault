@@ -49,8 +49,9 @@ The protocol will involve these actors:
 With a blinded signing scheme in place we can build a safe and practical vault
 implementation by passing PSBTs around.
 
-1. The depositor creates a PSBT specifying inputs for the deposit transaction,
-   as well as the amount for the vault output and any change outputs.
+1. The depositor creates a PSBT specifying inputs for the vault deposit
+   transaction, as well as the amount for the vault output and any change
+   outputs.
 
 2. The PSBT is sent to the client, along with a recovery address and an unvault
    timelock setting.
@@ -65,26 +66,28 @@ implementation by passing PSBTs around.
    aggregate public key back to the recovery address.
 
 6. The client generates a second aggregate public key for the unvault output
-   and deterministically constructs the unvault transaction to predict its txid.
+   and constructs the unvault transaction.
 
-7. Using the predicted unvault txid, the client builds the unvault recovery
-   transaction that will spend from the unvault output back to the recovery
-   address.
+7. The client builds the unvault recovery transaction that will spend from the
+   unvault output back to the recovery address.
 
-8. The client sends blinded variants of both recovery transactions to the
-   signers along with ZK proofs proving that the blinded messages are 
-   well-formed.
+8. The client sends blinded variants of the three transactions (vault recovery,
+   unvault, unvault recovery) to the signers along with ZK proofs proving that
+   the blinded messages are well-formed.
+   (Note: in the current implementation, the unvault tx is signed with the
+   final tx, there is a todo to move this to be presigned during the vaulting
+   step).
 
-9. Each signer will respond with partial signatures for both recovery
-   transactions using different nonces for each.
+9. Each signer will respond with partial signatures for the transactions
+   using different nonces for each.
 
-10. The client verifies that both recovery transactions are valid and fully
-    signed, before returning them to the depositor.
+10. The client verifies that the transaction graph is valid and fully signed,
+    before returning them to the depositor.
 
 11. The depositor receives the final PSBT with the vault output key filled and
-    both pre-signed recovery transactions from the client. It can now sign the
-    deposit and move the funds to the vault, knowing it has recovery options
-    for both the vault and unvault states.
+    the pre-signed transactions from the client. It can now verify the setup
+    and sign the deposit and move the funds to the vault, knowing it has
+    recovery options for both the vault and unvault states.
 
 ```mermaid
 classDiagram
@@ -152,75 +155,21 @@ designed to handle.
   the vault, however, since the depositor always has their recovery
   transactions in case of an unauthenticated unvault.
 
-### Details
+### ZK proofs
+We attach up to two ZK proofs with the transaction signing requests sent to the
+signers. 
 
-1) The holder wanting to deposit into a vault starts by contacting a set of
-signer servers, to get their public keys and nonces.
+The initial signing request for the two recovery transactions and unvault
+transaction contains a single proof per transaction, proving that the messages
+are blinded according to the protocol outlined in the [blinded
+Musig2](https://github.com/halseth/ephemeral-signing-service/blob/main/doc/general.md)
+writeup. We don't need to prove more about these tranasctions since the
+depositor can verify them before deciding to deposit into the vault
 
-Using this he creates a public key that is a Musig2 aggregate key of the
-signers.
+Essentially what is proved is that the values contributed by the individual
+signer (pubkey, public nonce) are part of the aggregation leading to the final
+blinded key and message.
 
-Using this key as the output, the client creates an unsigned transaction that
-has this as its only output.
-
-2) The signers are then asked to sign TWO recovery transactions from the vault:
-
-   a) **Vault recovery tx**: Spends from the vault output back to the recovery
-      address. Together with this signing request, the client attaches a ZK
-      proof that proves the transaction spends the whole amount to the hardcoded
-      recovery address.
-
-   b) **Unvault recovery tx**: To create this, the client first generates a
-      second aggregate public key (using fresh nonces from the signers) and
-      deterministically constructs the unvault transaction. By predicting the
-      unvault txid, the client can build a recovery transaction that spends from
-      the unvault output back to the recovery address. A ZK proof is attached
-      proving this transaction is correctly formed.
-
-   The recovery address is static for the whole vault lifetime, but not revealed
-   to the signers. Each signer uses a different nonce for each recovery
-   transaction.
-
-   Now that the client has BOTH pre-signed recovery transactions, it is safe to
-   sign the deposit tx and send the coins into the control of the signer quorum.
-   This protects against a compromised client during the unvault phase, as the
-   depositor already holds a pre-signed recovery transaction for the unvault
-   state.
-
-3) To unvault the funds, the owner contacts the client which uses the same
-   session data (public keys, nonces, coefficient salt) from vault creation to
-   reconstruct the same unvault aggregate key. The client creates:
-
-   a) **Unvault tx**: Spends from the vault to the pre-determined unvault output
-
-   b) **Final spend tx**: Timelocked transaction that spends from the unvault
-      output to the final destination
-
-   Note that the unvault recovery tx is NOT created at this point - it was
-   already pre-signed during vault creation (step 2b).
-
-4) These txs and proofs are sent to the signers who validate they are correctly
-   crafted, then sign them using the remaining nonces from the original session.
-
-### Nonce Management
-
-To enable pre-signing both recovery transactions during vault creation while
-still allowing the unvault and final spend transactions to be signed later, each
-signer generates **4 nonces** per vault session:
-
-- **Nonce 0**: Used for signing the vault recovery transaction (during vault creation)
-- **Nonce 1**: Used for signing the unvault recovery transaction (during vault creation)
-- **Nonce 2**: Used for signing the unvault transaction (during unvault phase)
-- **Nonce 3**: Used for signing the final spend transaction (during unvault phase)
-
-All nonces are generated during the initial vault creation and stored in the
-session data. The client reuses the same session (including public keys, nonces,
-and coefficient salt) during the unvault phase to ensure the unvault aggregate
-key matches the predicted value used when pre-signing the unvault recovery
-transaction.
-
-This nonce allocation ensures that:
-1. Both recovery transactions can be pre-signed before the deposit is made
-2. The depositor holds complete recovery options before funds enter the vault
-3. The same session can be safely reused for the unvault operations without
-   nonce reuse vulnerabilities
+For the last, finalization transaction the client will attach an additional
+proof, proving to the signers that the transaction is timelocked according to
+the policy committed to when the vault was created.
